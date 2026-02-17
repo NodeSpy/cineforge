@@ -1,0 +1,10 @@
+node_modules/
+frontend/node_modules/
+backend/frontend/dist/
+dist/
+.env
+*.db
+*.db-wal
+*.db-shm
+
+docker-compose.override.yml
