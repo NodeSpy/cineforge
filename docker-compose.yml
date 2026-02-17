@@ -10,12 +10,7 @@ services:
     volumes:
       - app-data:/data
     restart: unless-stopped
-    networks:
-      - grunklestan_default
 
-networks:
-  grunklestan_default:
-    external: true
 
 volumes:
   app-data:
