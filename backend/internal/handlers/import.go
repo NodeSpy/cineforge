@@ -5,10 +5,11 @@ import (
 	"log"
 	"net/http"
 
-	"radarr-importer/internal/config"
-	"radarr-importer/internal/conversions"
-	"radarr-importer/internal/jobs"
-	radarrClient "radarr-importer/internal/radarr"
+	"cineforge/internal/config"
+	"cineforge/internal/conversions"
+	"cineforge/internal/db"
+	"cineforge/internal/jobs"
+	radarrClient "cineforge/internal/radarr"
 )
 
 type ImportItem struct {
@@ -164,6 +165,10 @@ func ImportMovies(w http.ResponseWriter, r *http.Request) {
 
 	job := jobs.Create("import", len(req.Items))
 
+	if req.SessionID != "" {
+		conversions.SetSessionJobID(req.SessionID, job.ID)
+	}
+
 	go runImport(job, cfg, req.Items, req.SessionID, req.Tags)
 
 	writeJSON(w, http.StatusAccepted, ImportResponse{JobID: job.ID})
@@ -276,6 +281,9 @@ func runImport(job *jobs.Job, cfg config.AppConfig, items []ImportItem, sessionI
 			Status: "success",
 		})
 
+		db.DB.Exec(`INSERT OR IGNORE INTO imported_movies (tmdb_id, imdb_id, title, job_id) VALUES (?, ?, ?, ?)`,
+			added.TmdbID, added.ImdbID, added.Title, job.ID)
+
 		if sessionID != "" {
 			if err := conversions.MarkItemImported(sessionID, added.TmdbID); err != nil {
 				log.Printf("[import] Failed to mark item imported in session %s: %v", sessionID, err)
@@ -291,5 +299,6 @@ func runImport(job *jobs.Job, cfg config.AppConfig, items []ImportItem, sessionI
 		} else {
 			log.Printf("[import] Cleaned up imported items for session %s", sessionID)
 		}
+		conversions.SetSessionStatus(sessionID, "done")
 	}
 }

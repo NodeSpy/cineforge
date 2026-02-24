@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"radarr-importer/internal/db"
+	"cineforge/internal/db"
 )
 
 type AppConfig struct {
@@ -187,6 +187,58 @@ func GetMasked() (AppConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+type NormalizeConfig struct {
+	TargetLUFS   float64 `json:"target_lufs"`
+	HWAccel      string  `json:"hwaccel"`
+	AudioBitrate string  `json:"audio_bitrate"`
+	Backup       bool    `json:"backup"`
+	Parallel     int     `json:"parallel"`
+	VideoMode    string  `json:"video_mode"`
+}
+
+func GetNormalizeConfig() NormalizeConfig {
+	cfg := NormalizeConfig{
+		TargetLUFS:   -16.0,
+		HWAccel:      "auto",
+		AudioBitrate: "320k",
+		Backup:       false,
+		Parallel:     1,
+		VideoMode:    "copy",
+	}
+
+	rows, err := db.DB.Query("SELECT key, value FROM config WHERE key LIKE 'normalize_%'")
+	if err != nil {
+		return cfg
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			continue
+		}
+		switch key {
+		case "normalize_target_lufs":
+			if v, err := strconv.ParseFloat(value, 64); err == nil {
+				cfg.TargetLUFS = v
+			}
+		case "normalize_hwaccel":
+			cfg.HWAccel = value
+		case "normalize_audio_bitrate":
+			cfg.AudioBitrate = value
+		case "normalize_backup":
+			cfg.Backup = value == "true"
+		case "normalize_parallel":
+			if v, err := strconv.Atoi(value); err == nil {
+				cfg.Parallel = v
+			}
+		case "normalize_video_mode":
+			cfg.VideoMode = value
+		}
+	}
+	return cfg
 }
 
 func maskSecret(s string) string {

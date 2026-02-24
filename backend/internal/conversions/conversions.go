@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"radarr-importer/internal/db"
-	"radarr-importer/internal/tmdb"
+	"cineforge/internal/db"
+	"cineforge/internal/tmdb"
 )
 
 const maxSourceJSONSize = 1 << 20 // 1 MB
@@ -19,6 +19,7 @@ type Session struct {
 	Status     string    `json:"status"` // matching, ready, importing, done
 	Total      int       `json:"total"`
 	Matched    int       `json:"matched"`
+	JobID      string    `json:"job_id,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	Items      []Item    `json:"items,omitempty"`
@@ -141,7 +142,7 @@ func GetSession(sessionID string) (*Session, error) {
 func ListSessions() ([]Session, error) {
 	rows, err := db.DB.Query(
 		`SELECT id, name, status, total, matched, created_at, updated_at
-		 FROM conversion_sessions WHERE status != 'done' ORDER BY created_at DESC`,
+		 FROM conversion_sessions WHERE status NOT IN ('done', 'importing') ORDER BY created_at DESC`,
 	)
 	if err != nil {
 		return nil, err
@@ -158,6 +159,38 @@ func ListSessions() ([]Session, error) {
 	}
 
 	return sessions, nil
+}
+
+// ListAllSessions returns all sessions including done/importing ones.
+func ListAllSessions() ([]Session, error) {
+	rows, err := db.DB.Query(
+		`SELECT id, name, status, total, matched, COALESCE(job_id, ''), created_at, updated_at
+		 FROM conversion_sessions ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sessions := make([]Session, 0)
+	for rows.Next() {
+		var s Session
+		if err := rows.Scan(&s.ID, &s.Name, &s.Status, &s.Total, &s.Matched, &s.JobID, &s.CreatedAt, &s.UpdatedAt); err != nil {
+			continue
+		}
+		sessions = append(sessions, s)
+	}
+
+	return sessions, nil
+}
+
+// SetSessionJobID links a conversion session to its import job.
+func SetSessionJobID(sessionID, jobID string) error {
+	_, err := db.DB.Exec(
+		`UPDATE conversion_sessions SET job_id = ? WHERE id = ?`,
+		jobID, sessionID,
+	)
+	return err
 }
 
 // GetSessionSourceData loads and parses the stored source JSON for a session.

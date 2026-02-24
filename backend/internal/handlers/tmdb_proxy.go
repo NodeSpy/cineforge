@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"radarr-importer/internal/config"
-	"radarr-importer/internal/tmdb"
+	"cineforge/internal/config"
+	"cineforge/internal/tmdb"
 )
 
 type TestTMDbRequest struct {

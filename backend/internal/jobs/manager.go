@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"radarr-importer/internal/db"
+	"cineforge/internal/db"
 )
 
 type Status string
@@ -28,16 +28,18 @@ type Result struct {
 }
 
 type Job struct {
-	ID        string    `json:"id"`
-	Type      string    `json:"type"`
-	Status    Status    `json:"status"`
-	Total     int       `json:"total"`
-	Completed int       `json:"completed"`
-	Succeeded int       `json:"succeeded"`
-	Failed    int       `json:"failed"`
-	Results   []Result  `json:"results"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                 string           `json:"id"`
+	Type               string           `json:"type"`
+	Status             Status           `json:"status"`
+	Total              int              `json:"total"`
+	Completed          int              `json:"completed"`
+	Succeeded          int              `json:"succeeded"`
+	Failed             int              `json:"failed"`
+	Results            []Result         `json:"results"`
+	CreatedAt          time.Time        `json:"created_at"`
+	UpdatedAt          time.Time        `json:"updated_at"`
+	ReconciledResults  json.RawMessage  `json:"reconciled_results,omitempty"`
+	ReconciledAt       *time.Time       `json:"reconciled_at,omitempty"`
 }
 
 type Manager struct {
@@ -154,19 +156,26 @@ func saveJob(job *Job) {
 }
 
 func loadJob(id string) *Job {
-	row := db.DB.QueryRow("SELECT id, type, status, total, completed, succeeded, failed, results, created_at, updated_at FROM jobs WHERE id = ?", id)
+	row := db.DB.QueryRow("SELECT id, type, status, total, completed, succeeded, failed, results, created_at, updated_at, reconciled_results, reconciled_at FROM jobs WHERE id = ?", id)
 
 	var job Job
 	var resultsJSON string
 	var status string
+	var reconciledJSON *string
+	var reconciledAt *time.Time
 	err := row.Scan(&job.ID, &job.Type, &status, &job.Total, &job.Completed,
-		&job.Succeeded, &job.Failed, &resultsJSON, &job.CreatedAt, &job.UpdatedAt)
+		&job.Succeeded, &job.Failed, &resultsJSON, &job.CreatedAt, &job.UpdatedAt,
+		&reconciledJSON, &reconciledAt)
 	if err != nil {
 		return nil
 	}
 
 	job.Status = Status(status)
 	json.Unmarshal([]byte(resultsJSON), &job.Results)
+	if reconciledJSON != nil && *reconciledJSON != "" {
+		job.ReconciledResults = json.RawMessage(*reconciledJSON)
+	}
+	job.ReconciledAt = reconciledAt
 
 	DefaultManager.mu.Lock()
 	DefaultManager.jobs[job.ID] = &job

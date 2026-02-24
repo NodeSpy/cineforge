@@ -1,7 +1,7 @@
 services:
-  radarr-importer:
+  cineforge:
     build: .
-    container_name: radarr-importer
+    container_name: cineforge
     ports:
       - "8085:8080"
     environment:
@@ -9,8 +9,10 @@ services:
       - PORT=8080
     volumes:
       - app-data:/data
+      # - /path/to/media:/media  # Mount your media library for normalization
     restart: unless-stopped
 
 
 volumes:
   app-data:
+    name: cineforge-data

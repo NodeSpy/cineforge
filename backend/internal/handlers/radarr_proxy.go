@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"radarr-importer/internal/config"
-	radarrClient "radarr-importer/internal/radarr"
+	"cineforge/internal/config"
+	radarrClient "cineforge/internal/radarr"
 )
 
 func GetRadarrStatus(w http.ResponseWriter, r *http.Request) {

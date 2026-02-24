@@ -73,6 +73,17 @@ export interface Job {
   results: JobResult[];
   created_at: string;
   updated_at: string;
+  reconciled_results?: ReconcileResponse;
+  reconciled_at?: string;
+}
+
+export interface ReconciledResult extends JobResult {
+  current_status: 'in_radarr' | 'missing';
+}
+
+export interface ReconcileResponse {
+  results: ReconciledResult[];
+  summary: { in_radarr: number; missing: number };
 }
 
 export interface ConvertMatch {
@@ -99,6 +110,7 @@ export interface ConversionSession {
   status: string;
   total: number;
   matched: number;
+  job_id?: string;
   created_at: string;
   updated_at: string;
   items?: ConversionItem[];
@@ -128,6 +140,156 @@ export interface ValidationResult {
   service: string;
   status: string;
   message: string;
+}
+
+// Library types
+export interface MovieFile {
+  id: number;
+  movieId: number;
+  relativePath?: string;
+  path?: string;
+  size: number;
+  dateAdded?: string;
+  quality?: { quality: { id: number; name: string; source: string; resolution: number }; revision?: { version: number; real: number; isRepack: boolean } };
+  mediaInfo?: MediaInfo;
+  languages?: { id: number; name: string }[];
+  qualityCutoffNotMet?: boolean;
+}
+
+export interface MediaInfo {
+  audioBitrate: number;
+  audioChannels: number;
+  audioCodec: string;
+  audioLanguages: string;
+  audioStreamCount: number;
+  videoBitDepth: number;
+  videoBitrate: number;
+  videoCodec: string;
+  videoFps: number;
+  videoDynamicRange: string;
+  videoDynamicRangeType: string;
+  resolution: string;
+  runTime: string;
+  scanType: string;
+  subtitles: string;
+}
+
+export interface LibraryMovie {
+  id: number;
+  title: string;
+  originalTitle?: string;
+  sortTitle?: string;
+  year: number;
+  tmdbId: number;
+  imdbId?: string;
+  overview?: string;
+  status?: string;
+  studio?: string;
+  certification?: string;
+  runtime?: number;
+  genres?: string[];
+  images?: { coverType: string; remoteUrl?: string; url?: string }[];
+  monitored: boolean;
+  hasFile?: boolean;
+  sizeOnDisk?: number;
+  movieFileId?: number;
+  qualityProfileId: number;
+  rootFolderPath?: string;
+  path?: string;
+  minimumAvailability: string;
+  added?: string;
+  tags?: number[];
+  movieFile?: MovieFile;
+}
+
+export interface FilterOptions {
+  video_codecs: string[];
+  audio_codecs: string[];
+  resolutions: number[];
+  genres: string[];
+  root_folders: string[];
+  years: { min: number; max: number };
+}
+
+export interface LibraryResponse {
+  movies: LibraryMovie[];
+  tags: RadarrTag[];
+  quality_profiles: QualityProfile[];
+  filter_options: FilterOptions;
+  normalized_ids?: number[];
+  cached_at?: string;
+}
+
+// Normalize types
+export interface NormalizeCandidate {
+  title: string;
+  year: number;
+  tmdb_id: number;
+  radarr_id: number;
+  file_path: string;
+  file_size: number;
+  poster_url: string;
+  already_normalized: boolean;
+}
+
+export interface NormalizeConfig {
+  target_lufs: number;
+  hwaccel: string;
+  audio_bitrate: string;
+  backup: boolean;
+  parallel: number;
+  video_mode: string;
+}
+
+export interface NormalizeJob {
+  id: string;
+  status: string;
+  total: number;
+  completed: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NormalizeJobItem {
+  file_path: string;
+  title: string;
+  status: string;
+  measured_lufs?: number;
+  target_lufs?: number;
+  error?: string;
+}
+
+export interface NormalizeJobDetail extends NormalizeJob {
+  items: NormalizeJobItem[];
+}
+
+export interface PaginatedNormalizeJobs {
+  jobs: NormalizeJob[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+export interface NormalizeStatusEvent {
+  status: string;
+  total: number;
+  completed: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+}
+
+export interface NormalizeItemStatus {
+  file_path: string;
+  title: string;
+  status: string;
+  measured_lufs?: number;
+  target_lufs?: number;
+  error?: string;
+  progress_pct?: number;
 }
 
 export interface ValidateConfigResponse {
@@ -249,9 +411,21 @@ export async function getJob(id: string): Promise<Job> {
   return res.json();
 }
 
+export async function reconcileJob(id: string): Promise<ReconcileResponse> {
+  const res = await fetch(`${BASE}/jobs/${id}/reconcile`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to reconcile job with Radarr');
+  return res.json();
+}
+
 // Conversions
 export async function listConversions(): Promise<ConversionSession[]> {
   const res = await fetch(`${BASE}/conversions`);
+  if (!res.ok) throw new Error('Failed to list conversions');
+  return res.json();
+}
+
+export async function listAllConversions(): Promise<ConversionSession[]> {
+  const res = await fetch(`${BASE}/conversions/all`);
   if (!res.ok) throw new Error('Failed to list conversions');
   return res.json();
 }
@@ -385,4 +559,102 @@ export async function resumeConvertStream(
 
   const reader = res.body.getReader();
   await parseSSEStream(reader, callbacks);
+}
+
+// Library
+export async function getLibrary(): Promise<LibraryResponse> {
+  const res = await fetch(`${BASE}/library`);
+  if (!res.ok) throw new Error('Failed to fetch library');
+  return res.json();
+}
+
+export async function refreshLibrary(): Promise<LibraryResponse> {
+  const res = await fetch(`${BASE}/library/refresh`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to refresh library');
+  return res.json();
+}
+
+// Normalize
+export async function getNormalizeCandidates(): Promise<NormalizeCandidate[]> {
+  const res = await fetch(`${BASE}/normalize/candidates`);
+  if (!res.ok) throw new Error('Failed to fetch candidates');
+  return res.json();
+}
+
+export async function startNormalize(items: { radarr_id: number; tmdb_id: number; title: string; file_path: string }[], config?: NormalizeConfig): Promise<{ job_id: string }> {
+  const res = await fetch(`${BASE}/normalize/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items, config }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: 'Start failed' }));
+    throw new Error(data.error || 'Start failed');
+  }
+  return res.json();
+}
+
+export async function stopNormalize(jobId: string): Promise<void> {
+  await fetch(`${BASE}/normalize/stop/${jobId}`, { method: 'POST' });
+}
+
+export async function retryNormalize(jobId: string): Promise<{ job_id: string }> {
+  const res = await fetch(`${BASE}/normalize/retry/${jobId}`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to retry normalize job');
+  return res.json();
+}
+
+export function subscribeNormalizeStatus(
+  jobId: string,
+  onProgress: (data: NormalizeStatusEvent) => void,
+  onItems: (items: NormalizeItemStatus[]) => void,
+  onDone: (status: string) => void,
+  onError: (err: string) => void,
+): EventSource {
+  const es = new EventSource(`${BASE}/normalize/status/${jobId}`);
+  es.addEventListener('progress', (e) => {
+    try { onProgress(JSON.parse((e as MessageEvent).data)); } catch { /* skip */ }
+  });
+  es.addEventListener('items', (e) => {
+    try { onItems(JSON.parse((e as MessageEvent).data)); } catch { /* skip */ }
+  });
+  es.addEventListener('done', (e) => {
+    try { onDone(JSON.parse((e as MessageEvent).data).status); } catch { /* skip */ }
+    es.close();
+  });
+  es.addEventListener('error', () => { es.close(); });
+  return es;
+}
+
+export async function getNormalizeJobs(page = 1, perPage = 10): Promise<PaginatedNormalizeJobs> {
+  const res = await fetch(`${BASE}/normalize/jobs?page=${page}&per_page=${perPage}`);
+  if (!res.ok) throw new Error('Failed to fetch normalize jobs');
+  return res.json();
+}
+
+export async function getNormalizeJob(id: string): Promise<NormalizeJobDetail> {
+  const res = await fetch(`${BASE}/normalize/jobs/${id}`);
+  if (!res.ok) throw new Error('Failed to fetch normalize job');
+  return res.json();
+}
+
+export async function clearNormalizeHistory(): Promise<void> {
+  const res = await fetch(`${BASE}/normalize/history`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to clear normalize history');
+}
+
+export async function getNormalizeConfig(): Promise<NormalizeConfig> {
+  const res = await fetch(`${BASE}/normalize/config`);
+  if (!res.ok) throw new Error('Failed to fetch normalize config');
+  return res.json();
+}
+
+export async function updateNormalizeConfig(config: NormalizeConfig): Promise<NormalizeConfig> {
+  const res = await fetch(`${BASE}/normalize/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error('Failed to update normalize config');
+  return res.json();
 }

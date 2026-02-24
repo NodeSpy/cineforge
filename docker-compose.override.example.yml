@@ -1,0 +1,6 @@
+services:
+  cineforge:
+    volumes:
+      - /path/to/your/media:/media:rw
+    devices:
+      - /dev/dri:/dev/dri  # VAAPI hardware acceleration

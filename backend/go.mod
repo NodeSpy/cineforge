@@ -1,4 +1,4 @@
-module radarr-importer
+module cineforge
 
 go 1.22
 

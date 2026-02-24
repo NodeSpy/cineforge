@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"radarr-importer/internal/conversions"
+	"cineforge/internal/conversions"
 )
 
 func ListConversions(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +59,16 @@ func UpdateConversionSelection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func ListConversionHistory(w http.ResponseWriter, r *http.Request) {
+	sessions, err := conversions.ListAllSessions()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to list sessions"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, sessions)
 }
 
 func DeleteConversion(w http.ResponseWriter, r *http.Request) {

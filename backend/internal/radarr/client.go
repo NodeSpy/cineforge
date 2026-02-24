@@ -35,15 +35,24 @@ type Movie struct {
 	TmdbID              int         `json:"tmdbId"`
 	ImdbID              string      `json:"imdbId,omitempty"`
 	Overview            string      `json:"overview,omitempty"`
+	Status              string      `json:"status,omitempty"`
+	Studio              string      `json:"studio,omitempty"`
+	Certification       string      `json:"certification,omitempty"`
+	Runtime             int         `json:"runtime,omitempty"`
+	Genres              []string    `json:"genres,omitempty"`
 	Images              []Image     `json:"images,omitempty"`
 	Monitored           bool        `json:"monitored"`
+	HasFile             bool        `json:"hasFile,omitempty"`
+	SizeOnDisk          int64       `json:"sizeOnDisk,omitempty"`
+	MovieFileID         int         `json:"movieFileId,omitempty"`
 	QualityProfileID    int         `json:"qualityProfileId"`
 	RootFolderPath      string      `json:"rootFolderPath,omitempty"`
+	Path                string      `json:"path,omitempty"`
 	MinimumAvailability string      `json:"minimumAvailability"`
-	AddOptions          *AddOptions `json:"addOptions,omitempty"`
+	Added               string      `json:"added,omitempty"`
 	Tags                []int       `json:"tags,omitempty"`
-	Status              string      `json:"status,omitempty"`
-	HasFile             bool        `json:"hasFile,omitempty"`
+	MovieFile           *MovieFile  `json:"movieFile,omitempty"`
+	AddOptions          *AddOptions `json:"addOptions,omitempty"`
 }
 
 type Image struct {
@@ -75,6 +84,60 @@ type RootFolder struct {
 type SystemStatus struct {
 	Version string `json:"version"`
 	AppName string `json:"appName"`
+}
+
+type MovieFile struct {
+	ID                  int        `json:"id"`
+	MovieID             int        `json:"movieId"`
+	RelativePath        string     `json:"relativePath,omitempty"`
+	Path                string     `json:"path,omitempty"`
+	Size                int64      `json:"size"`
+	DateAdded           string     `json:"dateAdded,omitempty"`
+	Quality             *Quality   `json:"quality,omitempty"`
+	MediaInfo           *MediaInfo `json:"mediaInfo,omitempty"`
+	Languages           []Language `json:"languages,omitempty"`
+	QualityCutoffNotMet bool       `json:"qualityCutoffNotMet,omitempty"`
+}
+
+type MediaInfo struct {
+	AudioBitrate          int64   `json:"audioBitrate"`
+	AudioChannels         float64 `json:"audioChannels"`
+	AudioCodec            string  `json:"audioCodec"`
+	AudioLanguages        string  `json:"audioLanguages"`
+	AudioStreamCount      int     `json:"audioStreamCount"`
+	VideoBitDepth         int     `json:"videoBitDepth"`
+	VideoBitrate          int64   `json:"videoBitrate"`
+	VideoCodec            string  `json:"videoCodec"`
+	VideoFps              float64 `json:"videoFps"`
+	VideoDynamicRange     string  `json:"videoDynamicRange"`
+	VideoDynamicRangeType string  `json:"videoDynamicRangeType"`
+	Resolution            string  `json:"resolution"`
+	RunTime               string  `json:"runTime"`
+	ScanType              string  `json:"scanType"`
+	Subtitles             string  `json:"subtitles"`
+}
+
+type Quality struct {
+	Quality  QualityDetail `json:"quality"`
+	Revision Revision      `json:"revision,omitempty"`
+}
+
+type QualityDetail struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	Source     string `json:"source"`
+	Resolution int    `json:"resolution"`
+}
+
+type Revision struct {
+	Version int  `json:"version"`
+	Real    int  `json:"real"`
+	IsRepack bool `json:"isRepack"`
+}
+
+type Language struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
 }
 
 func (c *Client) doRequest(method, path string, body interface{}) ([]byte, error) {
@@ -249,4 +312,30 @@ func (c *Client) GetMovies() ([]Movie, error) {
 	}
 
 	return movies, nil
+}
+
+func (c *Client) GetMovie(id int) (*Movie, error) {
+	path := fmt.Sprintf("/movie/%d", id)
+	body, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var movie Movie
+	if err := json.Unmarshal(body, &movie); err != nil {
+		return nil, err
+	}
+	return &movie, nil
+}
+
+func (c *Client) GetMovieFiles(movieID int) ([]MovieFile, error) {
+	path := fmt.Sprintf("/moviefile?movieId=%d", movieID)
+	body, err := c.doRequest("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var files []MovieFile
+	if err := json.Unmarshal(body, &files); err != nil {
+		return nil, err
+	}
+	return files, nil
 }

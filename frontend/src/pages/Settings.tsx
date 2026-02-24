@@ -8,10 +8,14 @@ import {
   testTmdbConnection,
   getQualityProfiles,
   getRootFolders,
+  getNormalizeConfig,
+  updateNormalizeConfig,
+  clearNormalizeHistory,
   type AppConfig,
   type QualityProfile,
   type RootFolder,
   type ValidationResult,
+  type NormalizeConfig,
 } from '../api/client';
 
 export default function Settings() {
@@ -29,19 +33,28 @@ export default function Settings() {
   const [revealedSecrets, setRevealedSecrets] = useState<{ radarr_api_key?: string; tmdb_api_key?: string }>({});
   const dirtyFields = useRef<Set<keyof AppConfig>>(new Set());
 
+  const defaultNormalize: NormalizeConfig = { target_lufs: -16.0, hwaccel: 'auto', audio_bitrate: '320k', backup: false, parallel: 1, video_mode: 'copy' };
+  const [normalizeForm, setNormalizeForm] = useState<NormalizeConfig>(defaultNormalize);
+  const normalizeChanged = useRef(false);
+  const [clearingHistory, setClearingHistory] = useState(false);
+  const [clearMessage, setClearMessage] = useState('');
+
   useEffect(() => {
     loadConfig();
   }, []);
 
   async function loadConfig() {
     try {
-      const cfg = await getConfig();
+      const [cfg, ncfg] = await Promise.all([getConfig(), getNormalizeConfig()]);
       setConfig(cfg);
       setForm(cfg);
       dirtyFields.current.clear();
       setRevealedSecrets({});
       setShowRadarrKey(false);
       setShowTmdbKey(false);
+
+      setNormalizeForm(ncfg);
+      normalizeChanged.current = false;
 
       if (cfg.radarr_url && cfg.radarr_api_key) {
         loadRadarrData();
@@ -66,6 +79,11 @@ export default function Settings() {
   function updateField(key: keyof AppConfig, value: string | number | boolean) {
     dirtyFields.current.add(key);
     setForm(prev => ({ ...prev, [key]: value }));
+  }
+
+  function updateNormalizeField<K extends keyof NormalizeConfig>(key: K, value: NormalizeConfig[K]) {
+    normalizeChanged.current = true;
+    setNormalizeForm(prev => ({ ...prev, [key]: value }));
   }
 
   function getDirtyPayload(): Partial<AppConfig> | null {
@@ -129,8 +147,9 @@ export default function Settings() {
     setMessage(null);
 
     const payload = getDirtyPayload();
+    const hasNormalizeChanges = normalizeChanged.current;
 
-    if (!payload) {
+    if (!payload && !hasNormalizeChanges) {
       try {
         const res = await validateConfig();
         const allOk = res.results.every((r: ValidationResult) => r.status === 'ok');
@@ -147,15 +166,29 @@ export default function Settings() {
     }
 
     try {
-      const updated = await updateConfig(payload);
-      setConfig(updated);
-      setForm(updated);
-      dirtyFields.current.clear();
-      setRevealedSecrets({});
-      setShowRadarrKey(false);
-      setShowTmdbKey(false);
+      const promises: Promise<unknown>[] = [];
+
+      if (payload) {
+        promises.push(updateConfig(payload).then(updated => {
+          setConfig(updated);
+          setForm(updated);
+          dirtyFields.current.clear();
+          setRevealedSecrets({});
+          setShowRadarrKey(false);
+          setShowTmdbKey(false);
+          loadRadarrData();
+        }));
+      }
+
+      if (hasNormalizeChanges) {
+        promises.push(updateNormalizeConfig(normalizeForm).then(saved => {
+          setNormalizeForm(saved);
+          normalizeChanged.current = false;
+        }));
+      }
+
+      await Promise.all(promises);
       setMessage({ type: 'success', text: 'Configuration saved successfully' });
-      loadRadarrData();
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to save' });
     } finally {
@@ -419,6 +452,161 @@ export default function Settings() {
             />
             <span className="text-sm text-gray-300">Search on Add</span>
           </label>
+        </div>
+      </section>
+
+      {/* Normalize Defaults */}
+      <section className="bg-dark-900 border border-dark-800 rounded-xl p-6 space-y-5">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-200 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-teal-500"></span>
+            Normalize Defaults
+          </h3>
+          <p className="text-xs text-dark-500 mt-1">Default settings for audio normalization jobs. These can be overridden per-job on the Normalize page.</p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-dark-300 mb-2">Target Loudness</label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+            {([
+              { value: -16.0, label: 'Streaming', desc: 'Netflix, Disney+, YouTube' },
+              { value: -24.0, label: 'Broadcast', desc: 'EBU R128 TV standard' },
+              { value: -27.0, label: 'Cinematic', desc: 'Theater-like dynamic range' },
+            ] as const).map(preset => (
+              <button
+                key={preset.value}
+                onClick={() => updateNormalizeField('target_lufs', preset.value)}
+                className={'p-3 rounded-lg border text-left transition-colors ' + (normalizeForm.target_lufs === preset.value ? 'border-teal-500 bg-teal-500/10' : 'border-dark-700 hover:border-dark-600')}
+              >
+                <div className="text-sm text-gray-100 font-medium">{preset.label} <span className="text-dark-400 font-normal">({preset.value})</span></div>
+                <div className="text-xs text-dark-400 mt-0.5">{preset.desc}</div>
+              </button>
+            ))}
+            <div className={'p-3 rounded-lg border transition-colors ' + (![-16.0, -24.0, -27.0].includes(normalizeForm.target_lufs) ? 'border-teal-500 bg-teal-500/10' : 'border-dark-700')}>
+              <div className="text-sm text-gray-100 font-medium mb-1.5">Custom</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  step="0.5"
+                  min="-70"
+                  max="0"
+                  value={normalizeForm.target_lufs}
+                  onChange={e => updateNormalizeField('target_lufs', parseFloat(e.target.value) || -16.0)}
+                  className="w-24 px-3 py-1.5 bg-dark-800 border border-dark-700 rounded text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"
+                />
+                <span className="text-xs text-dark-400">LUFS</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div>
+            <label className="block text-sm font-medium text-dark-300 mb-1.5">HW Acceleration</label>
+            <select
+              value={normalizeForm.hwaccel}
+              onChange={e => updateNormalizeField('hwaccel', e.target.value)}
+              className="w-full px-4 py-2.5 bg-dark-800 border border-dark-700 rounded-lg text-gray-200 focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500 text-sm"
+            >
+              <option value="auto">Auto Detect</option>
+              <option value="vaapi">VAAPI (Intel/AMD)</option>
+              <option value="nvenc">NVENC (NVIDIA)</option>
+              <option value="cpu">CPU Only</option>
+            </select>
+            <p className="text-xs text-dark-500 mt-1">GPU acceleration for video re-encoding. Only applies when video re-encoding is needed.</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-dark-300 mb-1.5">Audio Bitrate</label>
+            <select
+              value={normalizeForm.audio_bitrate}
+              onChange={e => updateNormalizeField('audio_bitrate', e.target.value)}
+              className="w-full px-4 py-2.5 bg-dark-800 border border-dark-700 rounded-lg text-gray-200 focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500 text-sm"
+            >
+              <option value="192k">192 kbps (smaller files)</option>
+              <option value="256k">256 kbps (balanced)</option>
+              <option value="320k">320 kbps (best quality)</option>
+            </select>
+            <p className="text-xs text-dark-500 mt-1">Higher bitrate means better audio quality but larger files.</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-dark-300 mb-1.5">Video Mode</label>
+            <select
+              value={normalizeForm.video_mode}
+              onChange={e => updateNormalizeField('video_mode', e.target.value)}
+              className="w-full px-4 py-2.5 bg-dark-800 border border-dark-700 rounded-lg text-gray-200 focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500 text-sm"
+            >
+              <option value="copy">Copy (fast, audio only)</option>
+              <option value="reencode">Re-encode (slow)</option>
+            </select>
+            <p className="text-xs text-dark-500 mt-1">Copy is fast and only changes audio. Re-encode also re-compresses the video track.</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-dark-300 mb-1.5">Parallel Jobs</label>
+            <input
+              type="number"
+              min={1}
+              max={4}
+              value={normalizeForm.parallel}
+              onChange={e => updateNormalizeField('parallel', Math.max(1, Math.min(4, parseInt(e.target.value) || 1)))}
+              className="w-full px-4 py-2.5 bg-dark-800 border border-dark-700 rounded-lg text-gray-200 focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500 text-sm"
+            />
+            <p className="text-xs text-dark-500 mt-1">Process multiple files simultaneously. Start with 1-2 unless you have a powerful system.</p>
+          </div>
+        </div>
+
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={normalizeForm.backup}
+            onChange={e => updateNormalizeField('backup', e.target.checked)}
+            className="rounded border-dark-600 bg-dark-800 text-teal-500 focus:ring-teal-500 focus:ring-offset-0"
+          />
+          <span className="text-sm text-gray-300">Create backup before normalizing</span>
+          <span className="text-xs text-dark-500">Keeps original file with .backup extension</span>
+        </label>
+      </section>
+
+      {/* Data Management */}
+      <section className="bg-dark-900 border border-dark-800 rounded-xl p-6 space-y-5">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-200 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-red-500"></span>
+            Data Management
+          </h3>
+          <p className="text-xs text-dark-500 mt-1">Manage stored data and job history.</p>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm text-gray-300">Normalize History</div>
+            <p className="text-xs text-dark-500 mt-0.5">Clear all normalization job records, item results, and processing cache.</p>
+          </div>
+          <div className="flex items-center gap-3">
+            {clearMessage && <span className="text-xs text-green-400">{clearMessage}</span>}
+            <button
+              onClick={async () => {
+                if (!confirm('This will permanently delete all normalization job history and cache. Are you sure?')) return;
+                setClearingHistory(true);
+                setClearMessage('');
+                try {
+                  await clearNormalizeHistory();
+                  setClearMessage('History cleared');
+                  setTimeout(() => setClearMessage(''), 3000);
+                } catch {
+                  setClearMessage('Failed to clear');
+                } finally {
+                  setClearingHistory(false);
+                }
+              }}
+              disabled={clearingHistory}
+              className="px-4 py-2 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded-lg text-sm font-medium text-red-400 transition-colors disabled:opacity-50"
+            >
+              {clearingHistory ? 'Clearing...' : 'Clear Normalize History'}
+            </button>
+          </div>
         </div>
       </section>
 

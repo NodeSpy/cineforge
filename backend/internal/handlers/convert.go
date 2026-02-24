@@ -11,9 +11,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"radarr-importer/internal/config"
-	"radarr-importer/internal/conversions"
-	"radarr-importer/internal/tmdb"
+	"cineforge/internal/config"
+	"cineforge/internal/conversions"
+	"cineforge/internal/tmdb"
 )
 
 type ConvertRequest struct {

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"radarr-importer/internal/config"
-	radarrClient "radarr-importer/internal/radarr"
-	"radarr-importer/internal/tmdb"
+	"cineforge/internal/config"
+	radarrClient "cineforge/internal/radarr"
+	"cineforge/internal/tmdb"
 )
 
 func GetConfig(w http.ResponseWriter, r *http.Request) {

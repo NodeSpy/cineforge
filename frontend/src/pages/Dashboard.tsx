@@ -1,24 +1,27 @@
 import { useState, useEffect } from 'react';
-import { getRecentJobs, getConfig, listConversions, deleteConversion, type Job, type AppConfig, type ConversionSession } from '../api/client';
+import { getRecentJobs, getConfig, listConversions, listAllConversions, deleteConversion, type Job, type AppConfig, type ConversionSession } from '../api/client';
 import { Link } from 'react-router-dom';
 
 export default function Dashboard() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [config, setConfig] = useState<AppConfig | null>(null);
-  const [sessions, setSessions] = useState<ConversionSession[]>([]);
+  const [activeSessions, setActiveSessions] = useState<ConversionSession[]>([]);
+  const [allSessions, setAllSessions] = useState<ConversionSession[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       try {
-        const [j, c, s] = await Promise.all([
+        const [j, c, active, all] = await Promise.all([
           getRecentJobs().catch(() => []),
           getConfig().catch(() => null),
           listConversions().catch(() => []),
+          listAllConversions().catch(() => []),
         ]);
         setJobs(j);
         setConfig(c);
-        setSessions(s);
+        setActiveSessions(active);
+        setAllSessions(all);
       } finally {
         setLoading(false);
       }
@@ -28,11 +31,13 @@ export default function Dashboard() {
 
   const isConfigured = config && config.radarr_url && config.radarr_api_key;
 
+  const historySessions = allSessions.filter(s => s.status === 'done' || s.status === 'importing');
+
   return (
     <div className="space-y-8">
       <div>
         <h2 className="text-2xl font-bold text-gray-100">Dashboard</h2>
-        <p className="text-dark-400 mt-1">Welcome to Radarr Importer</p>
+        <p className="text-dark-400 mt-1">Welcome to CineForge</p>
       </div>
 
       {!loading && !isConfigured && (
@@ -51,11 +56,22 @@ export default function Dashboard() {
       )}
 
       {isConfigured && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Link
-            to="/import"
-            className="group bg-dark-900 border border-dark-800 hover:border-radarr-500/30 rounded-xl p-6 transition-all"
-          >
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <Link to="/library" className="group bg-dark-900 border border-dark-800 hover:border-violet-500/30 rounded-xl p-6 transition-all">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 bg-violet-500/15 rounded-xl flex items-center justify-center group-hover:bg-violet-500/25 transition-colors">
+                <svg className="w-6 h-6 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 0 1-1.125-1.125M3.375 19.5h1.5C5.496 19.5 6 18.996 6 18.375m-3.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-200">Library</h3>
+                <p className="text-sm text-dark-400 mt-0.5">Browse and filter your Radarr library</p>
+              </div>
+            </div>
+          </Link>
+
+          <Link to="/import" className="group bg-dark-900 border border-dark-800 hover:border-radarr-500/30 rounded-xl p-6 transition-all">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 bg-radarr-500/15 rounded-xl flex items-center justify-center group-hover:bg-radarr-500/25 transition-colors">
                 <svg className="w-6 h-6 text-radarr-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -64,15 +80,12 @@ export default function Dashboard() {
               </div>
               <div>
                 <h3 className="font-semibold text-gray-200">Import by ID</h3>
-                <p className="text-sm text-dark-400 mt-0.5">Upload a JSON file with TMDb or IMDb IDs</p>
+                <p className="text-sm text-dark-400 mt-0.5">Upload JSON with TMDb/IMDb IDs</p>
               </div>
             </div>
           </Link>
 
-          <Link
-            to="/convert"
-            className="group bg-dark-900 border border-dark-800 hover:border-blue-500/30 rounded-xl p-6 transition-all"
-          >
+          <Link to="/convert" className="group bg-dark-900 border border-dark-800 hover:border-blue-500/30 rounded-xl p-6 transition-all">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 bg-blue-500/15 rounded-xl flex items-center justify-center group-hover:bg-blue-500/25 transition-colors">
                 <svg className="w-6 h-6 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -81,18 +94,32 @@ export default function Dashboard() {
               </div>
               <div>
                 <h3 className="font-semibold text-gray-200">Convert & Import</h3>
-                <p className="text-sm text-dark-400 mt-0.5">Look up titles on TMDb, then import to Radarr</p>
+                <p className="text-sm text-dark-400 mt-0.5">Look up titles on TMDb, then import</p>
+              </div>
+            </div>
+          </Link>
+
+          <Link to="/normalize" className="group bg-dark-900 border border-dark-800 hover:border-teal-500/30 rounded-xl p-6 transition-all">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 bg-teal-500/15 rounded-xl flex items-center justify-center group-hover:bg-teal-500/25 transition-colors">
+                <svg className="w-6 h-6 text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-200">Normalize Audio</h3>
+                <p className="text-sm text-dark-400 mt-0.5">Adjust loudness of media files</p>
               </div>
             </div>
           </Link>
         </div>
       )}
 
-      {!loading && sessions.length > 0 && (
+      {!loading && activeSessions.length > 0 && (
         <section className="space-y-4">
           <h3 className="text-lg font-semibold text-gray-200">Active Conversions</h3>
           <div className="space-y-2">
-            {sessions.map(session => (
+            {activeSessions.map(session => (
               <div
                 key={session.id}
                 className="flex items-center justify-between bg-dark-900 border border-blue-500/20 hover:border-blue-500/40 rounded-xl px-5 py-4 transition-colors group"
@@ -115,8 +142,7 @@ export default function Dashboard() {
                       <span className="mx-1.5 text-dark-600">&bull;</span>
                       <span className={
                         session.status === 'ready' ? 'text-green-400' :
-                        session.status === 'matching' ? 'text-yellow-400' :
-                        session.status === 'importing' ? 'text-radarr-400' : 'text-dark-400'
+                        session.status === 'matching' ? 'text-yellow-400' : 'text-dark-400'
                       }>
                         {session.status}
                       </span>
@@ -140,7 +166,7 @@ export default function Dashboard() {
                       if (!confirm(`Delete session "${session.name || 'Untitled'}"? This cannot be undone.`)) return;
                       try {
                         await deleteConversion(session.id);
-                        setSessions(prev => prev.filter(s => s.id !== session.id));
+                        setActiveSessions(prev => prev.filter(s => s.id !== session.id));
                       } catch {
                         alert('Failed to delete session');
                       }
@@ -160,7 +186,7 @@ export default function Dashboard() {
       )}
 
       <section className="space-y-4">
-        <h3 className="text-lg font-semibold text-gray-200">Recent Activity</h3>
+        <h3 className="text-lg font-semibold text-gray-200">History</h3>
 
         {loading ? (
           <div className="space-y-3">
@@ -168,14 +194,63 @@ export default function Dashboard() {
               <div key={i} className="animate-pulse bg-dark-900 border border-dark-800 rounded-xl h-16" />
             ))}
           </div>
-        ) : jobs.length === 0 ? (
+        ) : jobs.length === 0 && historySessions.length === 0 ? (
           <div className="bg-dark-900 border border-dark-800 rounded-xl p-8 text-center">
             <p className="text-dark-500 text-sm">No import jobs yet. Get started by importing some movies!</p>
           </div>
         ) : (
           <div className="space-y-2">
+            {historySessions.map(session => {
+              const content = (
+                <>
+                  <div className="flex items-center gap-4">
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/15 text-green-400">
+                      completed
+                    </span>
+                    <div>
+                      <p className="text-sm font-medium text-gray-200">
+                        Conversion &mdash; {session.name || 'Untitled'}
+                      </p>
+                      <p className="text-xs text-dark-500">{getTimeAgo(new Date(session.created_at))}</p>
+                    </div>
+                  </div>
+                  <div className="text-right text-sm text-dark-400">
+                    {session.matched} of {session.total} matched
+                  </div>
+                </>
+              );
+              const baseClass = "flex items-center justify-between bg-dark-900 border border-dark-800 rounded-xl px-5 py-4 transition-colors";
+              return session.job_id ? (
+                <Link key={'s-' + session.id} to={`/jobs/${session.job_id}`} className={baseClass + ' hover:border-dark-700'}>
+                  {content}
+                </Link>
+              ) : (
+                <div key={'s-' + session.id} className={baseClass}>
+                  {content}
+                </div>
+              );
+            })}
             {jobs.map(job => (
-              <JobRow key={job.id} job={job} />
+              <Link
+                key={job.id}
+                to={`/jobs/${job.id}`}
+                className="flex items-center justify-between bg-dark-900 border border-dark-800 hover:border-dark-700 rounded-xl px-5 py-4 transition-colors"
+              >
+                <div className="flex items-center gap-4">
+                  <StatusBadge status={job.status} />
+                  <div>
+                    <p className="text-sm font-medium text-gray-200">
+                      {job.type === 'import' ? 'Movie Import' : 'Conversion'} &mdash; {job.total} movies
+                    </p>
+                    <p className="text-xs text-dark-500">{getTimeAgo(new Date(job.created_at))}</p>
+                  </div>
+                </div>
+                <div className="text-right text-sm">
+                  {job.succeeded > 0 && <span className="text-green-400">{job.succeeded} added</span>}
+                  {job.succeeded > 0 && job.failed > 0 && <span className="text-dark-600 mx-1">/</span>}
+                  {job.failed > 0 && <span className="text-red-400">{job.failed} failed</span>}
+                </div>
+              </Link>
             ))}
           </div>
         )}
@@ -184,36 +259,17 @@ export default function Dashboard() {
   );
 }
 
-function JobRow({ job }: { job: Job }) {
-  const statusStyles: Record<string, string> = {
+function StatusBadge({ status }: { status: string }) {
+  const styles: Record<string, string> = {
     pending: 'bg-dark-700 text-dark-400',
     running: 'bg-radarr-500/15 text-radarr-400',
     completed: 'bg-green-500/15 text-green-400',
     failed: 'bg-red-500/15 text-red-400',
   };
-
-  const date = new Date(job.created_at);
-  const timeAgo = getTimeAgo(date);
-
   return (
-    <div className="bg-dark-900 border border-dark-800 rounded-xl px-5 py-4 flex items-center justify-between">
-      <div className="flex items-center gap-4">
-        <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${statusStyles[job.status]}`}>
-          {job.status}
-        </span>
-        <div>
-          <p className="text-sm font-medium text-gray-200">
-            {job.type === 'import' ? 'Movie Import' : 'Conversion'} — {job.total} movies
-          </p>
-          <p className="text-xs text-dark-500">{timeAgo}</p>
-        </div>
-      </div>
-      <div className="text-right text-sm">
-        {job.succeeded > 0 && <span className="text-green-400">{job.succeeded} added</span>}
-        {job.succeeded > 0 && job.failed > 0 && <span className="text-dark-600 mx-1">/</span>}
-        {job.failed > 0 && <span className="text-red-400">{job.failed} failed</span>}
-      </div>
-    </div>
+    <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${styles[status] || styles.pending}`}>
+      {status}
+    </span>
   );
 }
 
