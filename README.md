@@ -1,20 +1,15 @@
-# Radarr Importer
+# CineForge
 
-A disposable utility for bulk-importing hard-to-find classic animated shorts into [Radarr](https://radarr.video/). Built for one-off use when you need to add hundreds or thousands of entries that are tedious to search for manually — think vintage Looney Tunes, classic Disney shorts, Merrie Melodies, Silly Symphonies, and similar golden-age animation.
-
-## Why This Exists
-
-Radarr is great for managing a movie library, but adding large collections of pre-1960s animated shorts one at a time is painful. Many of these titles don't surface easily in Radarr's built-in search, and manually adding 1,000+ entries isn't realistic. This tool bridges that gap: point it at a JSON file, let it do the lookups, review the matches, and import them all at once.
-
-**This is not meant to run permanently.** Spin it up, do your import, tear it down.
+A comprehensive [Radarr](https://radarr.video/) companion utility for browsing your library, bulk-importing movies, and normalizing audio across your media collection.
 
 ## Features
 
-- **Import by ID** — Upload a JSON file containing TMDb or IMDb IDs and import them directly into Radarr.
-- **Convert & Import** — Upload a JSON file with title/year data (e.g. scraped filmography lists), automatically look up each title on TMDb, review the matches, then import. Handles rate limiting and can resume interrupted sessions.
-- **Duplicate Detection** — Skips movies already in your Radarr library.
-- **Tag Support** — Apply a Radarr tag to all imported items for easy filtering.
-- **Persistent Sessions** — Conversion matching progress is saved to SQLite, so you can close the browser and come back later.
+- **Library Browser** — Browse your entire Radarr library in a poster-card grid or table view. Filter by codec, resolution, audio format, HDR, genre, tags, and more. Cached locally in SQLite for fast repeat loads.
+- **Import by ID** — Upload a JSON file containing TMDb or IMDb IDs and import them directly into Radarr with duplicate detection and tag support.
+- **Convert & Import** — Upload a JSON file with title/year data, automatically look up each title on TMDb, review and select matches, then import. Handles rate limiting and can resume interrupted sessions.
+- **Audio Normalization** — Two-pass ffmpeg loudnorm processing with real-time progress. Beginner-friendly LUFS presets (Streaming, Broadcast, Cinematic) with an advanced settings toggle for hardware acceleration, audio bitrate, video mode, and parallel jobs. Includes job history with Before/After LUFS display, retry for failed items, and LUFS compliance checks to skip files already at target.
+- **Job History** — Track import and normalization history. Reconcile import results against Radarr to see which movies are present and which are still missing. Persisted across restarts.
+- **Settings** — Configure Radarr and TMDb connections, import defaults, normalization settings, and manage data (clear history).
 - **Encrypted Secrets** — API keys are stored with AES-256-GCM encryption at rest.
 
 ## Quick Start
@@ -27,8 +22,25 @@ The UI will be available at [http://localhost:8085](http://localhost:8085).
 
 1. Go to **Settings** and enter your Radarr URL, Radarr API key, and TMDb API key (get one at [themoviedb.org](https://www.themoviedb.org/settings/api)).
 2. Select a quality profile and root folder, then save.
-3. Use **Import** (if you already have TMDb/IMDb IDs) or **Convert** (if you have title/year JSON data).
-4. Review the matches, apply a tag if desired, and import.
+3. Browse your library, import movies, or normalize audio from the sidebar navigation.
+
+## Media Volume
+
+To use audio normalization, CineForge needs access to your media files. Copy `docker-compose.override.example.yml` to `docker-compose.override.yml` and configure your media volume mount:
+
+```yaml
+services:
+  cineforge:
+    volumes:
+      - /path/to/your/movies:/media/movies
+```
+
+For VAAPI hardware acceleration, also pass through the DRI device:
+
+```yaml
+    devices:
+      - /dev/dri:/dev/dri
+```
 
 ## JSON Formats
 
@@ -50,18 +62,22 @@ The UI will be available at [http://localhost:8085](http://localhost:8085).
 ]
 ```
 
-## Cleanup
-
-When you're done importing:
+## Development
 
 ```bash
-docker compose down -v
+# Frontend (dev server on :5173)
+cd frontend && npm install && npm run dev
+
+# Backend (API on :8080)
+cd backend && go run .
 ```
 
-The `-v` flag removes the data volume. There's nothing here you need to keep running.
+The Vite dev server proxies `/api` requests to the Go backend.
 
 ## Stack
 
-- **Backend**: Go (Chi router, modernc.org/sqlite)
-- **Frontend**: React, TypeScript, Vite, Tailwind CSS
-- **Infrastructure**: Single Docker container via Docker Compose
+- **Backend**: Go 1.22, Chi v5 router, modernc.org/sqlite (pure-Go, no CGo)
+- **Frontend**: React 18, TypeScript, Vite, Tailwind CSS
+- **Media Processing**: ffmpeg/ffprobe (included in container) with VAAPI/NVENC hardware acceleration support
+- **Database**: SQLite with WAL mode, AES-256-GCM encrypted secrets
+- **Infrastructure**: Multi-stage Docker build producing a single Alpine container
