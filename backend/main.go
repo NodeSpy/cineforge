@@ -82,7 +82,16 @@ func main() {
 			r.Get("/library", handlers.GetLibrary)
 			r.Post("/library/refresh", handlers.RefreshLibrary)
 
+			r.Post("/sonarr/test", handlers.TestSonarrConnection)
+			r.Get("/sonarr/profiles", handlers.GetSonarrQualityProfiles)
+			r.Get("/sonarr/rootfolders", handlers.GetSonarrRootFolders)
+			r.Get("/sonarr/tags", handlers.GetSonarrTags)
+			r.Post("/sonarr/tags", handlers.CreateSonarrTag)
+			r.Get("/sonarr/library", handlers.GetSonarrLibrary)
+			r.Post("/sonarr/library/refresh", handlers.RefreshSonarrLibrary)
+
 			r.Get("/normalize/candidates", handlers.GetNormalizeCandidates)
+			r.Get("/normalize/sonarr-candidates", handlers.GetSonarrNormalizeCandidates)
 			r.Post("/normalize/start", handlers.StartNormalize)
 			r.Post("/normalize/stop/{id}", handlers.StopNormalize)
 			r.Post("/normalize/retry/{id}", handlers.RetryNormalize)

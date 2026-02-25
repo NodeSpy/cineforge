@@ -1,4 +1,5 @@
-import { Routes, Route, NavLink } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import Dashboard from './pages/Dashboard';
 import Import from './pages/Import';
 import Convert from './pages/Convert';
@@ -7,16 +8,41 @@ import Normalize from './pages/Normalize';
 import Settings from './pages/Settings';
 import JobDetail from './pages/JobDetail';
 
-const navItems = [
+const primaryNavItems = [
   { to: '/', label: 'Dashboard', icon: HomeIcon },
   { to: '/library', label: 'Library', icon: LibraryIcon },
-  { to: '/import', label: 'Import', icon: DownloadIcon },
-  { to: '/convert', label: 'Convert', icon: RefreshIcon },
   { to: '/normalize', label: 'Normalize', icon: NormalizeIcon },
-  { to: '/settings', label: 'Settings', icon: GearIcon },
 ];
 
+const importToolItems = [
+  { to: '/import', label: 'Import', icon: DownloadIcon },
+  { to: '/convert', label: 'Convert', icon: RefreshIcon },
+];
+
+const IMPORT_TOOLS_KEY = 'cineforge:importToolsOpen';
+
 export default function App() {
+  const location = useLocation();
+  const isImportRoute = location.pathname === '/import' || location.pathname === '/convert';
+
+  const [importToolsOpen, setImportToolsOpen] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem(IMPORT_TOOLS_KEY);
+      if (stored !== null) return stored === 'true';
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (isImportRoute && !importToolsOpen) setImportToolsOpen(true);
+  }, [isImportRoute, importToolsOpen]);
+
+  const toggleImportTools = () => {
+    const next = !importToolsOpen;
+    setImportToolsOpen(next);
+    localStorage.setItem(IMPORT_TOOLS_KEY, String(next));
+  };
+
   return (
     <div className="min-h-screen flex bg-dark-950">
       <aside className="w-64 bg-dark-900 border-r border-dark-800 flex flex-col">
@@ -27,7 +53,7 @@ export default function App() {
           </h1>
         </div>
         <nav className="flex-1 p-4 space-y-1">
-          {navItems.map(({ to, label, icon: Icon }) => (
+          {primaryNavItems.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}
@@ -44,6 +70,61 @@ export default function App() {
               {label}
             </NavLink>
           ))}
+
+          <div className="pt-1">
+            <button
+              onClick={toggleImportTools}
+              className={`flex items-center justify-between w-full px-4 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors ${
+                isImportRoute ? 'text-radarr-400' : 'text-dark-500 hover:text-dark-300'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <ImportToolsIcon />
+                Import Tools
+              </span>
+              <svg
+                className={`w-3.5 h-3.5 transition-transform ${importToolsOpen ? 'rotate-90' : ''}`}
+                fill="currentColor"
+                viewBox="0 0 20 20"
+              >
+                <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+              </svg>
+            </button>
+            {importToolsOpen && (
+              <div className="mt-0.5 space-y-0.5">
+                {importToolItems.map(({ to, label, icon: Icon }) => (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    className={({ isActive }) =>
+                      `flex items-center gap-3 pl-8 pr-4 py-2 rounded-lg text-[13px] font-medium transition-colors ${
+                        isActive
+                          ? 'bg-radarr-500/15 text-radarr-400'
+                          : 'text-dark-400 hover:text-gray-100 hover:bg-dark-800'
+                      }`
+                    }
+                  >
+                    <Icon />
+                    {label}
+                  </NavLink>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <NavLink
+            to="/settings"
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                isActive
+                  ? 'bg-radarr-500/15 text-radarr-400'
+                  : 'text-dark-300 hover:text-gray-100 hover:bg-dark-800'
+              }`
+            }
+          >
+            <GearIcon />
+            Settings
+          </NavLink>
         </nav>
         <div className="p-4 border-t border-dark-800">
           <p className="text-xs text-dark-500 text-center">v2.0.0</p>
@@ -87,6 +168,14 @@ function LibraryIcon() {
   return (
     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 0 1-1.125-1.125M3.375 19.5h1.5C5.496 19.5 6 18.996 6 18.375m-3.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-1.5A1.125 1.125 0 0 1 18 18.375M20.625 4.5H3.375m17.25 0c.621 0 1.125.504 1.125 1.125M20.625 4.5h-1.5C18.504 4.5 18 5.004 18 5.625m3.75 0v1.5c0 .621-.504 1.125-1.125 1.125M3.375 4.5c-.621 0-1.125.504-1.125 1.125M3.375 4.5h1.5C5.496 4.5 6 5.004 6 5.625m-3.75 0v1.5c0 .621.504 1.125 1.125 1.125m0 0h1.5m-1.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m1.5-3.75C5.496 8.25 6 7.746 6 7.125v-1.5M4.875 8.25C5.496 8.25 6 8.754 6 9.375v1.5m0-5.25v5.25m0-5.25C6 5.004 6.504 4.5 7.125 4.5h9.75c.621 0 1.125.504 1.125 1.125m1.125 2.625h1.5m-1.5 0A1.125 1.125 0 0 1 18 7.125v-1.5m1.125 2.625c-.621 0-1.125.504-1.125 1.125v1.5m2.625-2.625c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125M18 5.625v5.25M7.125 12h9.75m-9.75 0A1.125 1.125 0 0 1 6 10.875M7.125 12C6.504 12 6 12.504 6 13.125m0-2.25C6 11.496 5.496 12 4.875 12M18 10.875c0 .621-.504 1.125-1.125 1.125M18 10.875c0 .621.504 1.125 1.125 1.125m-2.25 0c.621 0 1.125.504 1.125 1.125m-12 5.25v-5.25m0 5.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125m-12 0v-1.5c0-.621-.504-1.125-1.125-1.125M18 18.375v-5.25m0 5.25v-1.5c0-.621.504-1.125 1.125-1.125M18 13.125v1.5c0 .621.504 1.125 1.125 1.125M18 13.125c0-.621.504-1.125 1.125-1.125M6 13.125v1.5c0 .621-.504 1.125-1.125 1.125M6 13.125C6 12.504 5.496 12 4.875 12m-1.5 0h1.5m-1.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125M19.125 12h1.5m0 0c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h1.5m14.25 0h1.5" />
+    </svg>
+  );
+}
+
+function ImportToolsIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125v-3.75m16.5 3.75v3.75c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125v-3.75" />
     </svg>
   );
 }

@@ -19,6 +19,8 @@ import (
 type AppConfig struct {
 	RadarrURL        string `json:"radarr_url"`
 	RadarrAPIKey     string `json:"radarr_api_key"`
+	SonarrURL        string `json:"sonarr_url"`
+	SonarrAPIKey     string `json:"sonarr_api_key"`
 	TMDbAPIKey       string `json:"tmdb_api_key"`
 	QualityProfileID int    `json:"quality_profile_id"`
 	RootFolderPath   string `json:"root_folder_path"`
@@ -29,6 +31,7 @@ type AppConfig struct {
 
 var sensitiveKeys = map[string]bool{
 	"radarr_api_key": true,
+	"sonarr_api_key": true,
 	"tmdb_api_key":   true,
 }
 
@@ -120,6 +123,8 @@ func Get() (AppConfig, error) {
 	cfg := AppConfig{
 		RadarrURL:       values["radarr_url"],
 		RadarrAPIKey:    values["radarr_api_key"],
+		SonarrURL:       values["sonarr_url"],
+		SonarrAPIKey:    values["sonarr_api_key"],
 		TMDbAPIKey:      values["tmdb_api_key"],
 		RootFolderPath:  values["root_folder_path"],
 		MinAvailability: values["min_availability"],
@@ -181,6 +186,9 @@ func GetMasked() (AppConfig, error) {
 
 	if cfg.RadarrAPIKey != "" {
 		cfg.RadarrAPIKey = maskSecret(cfg.RadarrAPIKey)
+	}
+	if cfg.SonarrAPIKey != "" {
+		cfg.SonarrAPIKey = maskSecret(cfg.SonarrAPIKey)
 	}
 	if cfg.TMDbAPIKey != "" {
 		cfg.TMDbAPIKey = maskSecret(cfg.TMDbAPIKey)

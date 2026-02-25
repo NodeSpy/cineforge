@@ -3,6 +3,8 @@ const BASE = '/api';
 export interface AppConfig {
   radarr_url: string;
   radarr_api_key: string;
+  sonarr_url: string;
+  sonarr_api_key: string;
   tmdb_api_key: string;
   quality_profile_id: number;
   root_folder_path: string;
@@ -313,7 +315,7 @@ export async function updateConfig(config: Partial<AppConfig>): Promise<AppConfi
   return res.json();
 }
 
-export async function getSecrets(): Promise<{ radarr_api_key: string; tmdb_api_key: string }> {
+export async function getSecrets(): Promise<{ radarr_api_key: string; sonarr_api_key: string; tmdb_api_key: string }> {
   const res = await fetch(`${BASE}/config/secrets`);
   if (!res.ok) throw new Error('Failed to fetch secrets');
   return res.json();
@@ -581,7 +583,7 @@ export async function getNormalizeCandidates(): Promise<NormalizeCandidate[]> {
   return res.json();
 }
 
-export async function startNormalize(items: { radarr_id: number; tmdb_id: number; title: string; file_path: string }[], config?: NormalizeConfig): Promise<{ job_id: string }> {
+export async function startNormalize(items: { radarr_id: number; tmdb_id: number; title: string; file_path: string; target_lufs?: number }[], config?: NormalizeConfig): Promise<{ job_id: string }> {
   const res = await fetch(`${BASE}/normalize/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -656,5 +658,112 @@ export async function updateNormalizeConfig(config: NormalizeConfig): Promise<No
     body: JSON.stringify(config),
   });
   if (!res.ok) throw new Error('Failed to update normalize config');
+  return res.json();
+}
+
+// Sonarr types
+
+export interface SonarrSeason {
+  seasonNumber: number;
+  monitored: boolean;
+  statistics?: SonarrStats;
+}
+
+export interface SonarrStats {
+  episodeFileCount: number;
+  episodeCount: number;
+  totalEpisodeCount: number;
+  sizeOnDisk: number;
+  percentOfEpisodes: number;
+  seasonCount?: number;
+}
+
+export interface SonarrSeries {
+  id: number;
+  title: string;
+  sortTitle?: string;
+  year: number;
+  tvdbId?: number;
+  imdbId?: string;
+  overview?: string;
+  status?: string;
+  network?: string;
+  runtime?: number;
+  genres?: string[];
+  images?: { coverType: string; remoteUrl?: string; url?: string }[];
+  seasons?: SonarrSeason[];
+  monitored: boolean;
+  seriesType?: string;
+  path?: string;
+  qualityProfileId: number;
+  rootFolderPath?: string;
+  added?: string;
+  tags?: number[];
+  certification?: string;
+  statistics?: SonarrStats;
+}
+
+export interface SonarrEpisodeFile {
+  id: number;
+  seriesId: number;
+  seasonNumber: number;
+  relativePath?: string;
+  path?: string;
+  size: number;
+  dateAdded?: string;
+  quality?: { quality: { id: number; name: string; source: string; resolution: number }; revision?: { version: number; real: number; isRepack: boolean } };
+  mediaInfo?: MediaInfo;
+  languages?: { id: number; name: string }[];
+}
+
+export interface SonarrFilterOptions {
+  genres: string[];
+  networks: string[];
+  series_types: string[];
+  years: { min: number; max: number };
+}
+
+export interface SonarrLibraryResponse {
+  series: SonarrSeries[];
+  tags: RadarrTag[];
+  quality_profiles: QualityProfile[];
+  filter_options: SonarrFilterOptions;
+  cached_at?: string;
+}
+
+// Sonarr API functions
+
+export async function testSonarrConnection(url: string, apiKey: string): Promise<{ success: boolean; version?: string; appName?: string; error?: string }> {
+  const res = await fetch(`${BASE}/sonarr/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sonarr_url: url, sonarr_api_key: apiKey }),
+  });
+  if (!res.ok) throw new Error('Test request failed');
+  return res.json();
+}
+
+export async function getSonarrLibrary(): Promise<SonarrLibraryResponse> {
+  const res = await fetch(`${BASE}/sonarr/library`);
+  if (!res.ok) throw new Error('Failed to fetch Sonarr library');
+  return res.json();
+}
+
+export async function refreshSonarrLibrary(): Promise<SonarrLibraryResponse> {
+  const res = await fetch(`${BASE}/sonarr/library/refresh`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to refresh Sonarr library');
+  return res.json();
+}
+
+export async function getSonarrTags(): Promise<RadarrTag[]> {
+  const res = await fetch(`${BASE}/sonarr/tags`);
+  if (!res.ok) throw new Error('Failed to fetch Sonarr tags');
+  return res.json();
+}
+
+export async function getSonarrNormalizeCandidates(ids?: number[]): Promise<NormalizeCandidate[]> {
+  const params = ids && ids.length > 0 ? `?ids=${ids.join(',')}` : '';
+  const res = await fetch(`${BASE}/normalize/sonarr-candidates${params}`);
+  if (!res.ok) throw new Error('Failed to fetch Sonarr normalize candidates');
   return res.json();
 }

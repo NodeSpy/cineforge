@@ -153,6 +153,16 @@ func migrate() error {
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS sonarr_library_cache (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			sonarr_id INTEGER NOT NULL UNIQUE,
+			data_json TEXT NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS sonarr_library_cache_meta (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
 	}
 
 	for _, m := range migrations {

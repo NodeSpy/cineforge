@@ -160,6 +160,12 @@ export default function Import() {
         </p>
       </div>
 
+      <div className="bg-dark-800/60 border border-dark-700 rounded-lg px-5 py-3">
+        <p className="text-xs text-dark-400 leading-relaxed">
+          This tool is designed for bulk importing large collections of individual titles (e.g., classic Disney shorts, Looney Tunes episodes) into Radarr using JSON files with TMDb or IMDb IDs. For day-to-day use, the <a href="/library" className="text-violet-400 hover:underline">Library</a> and <a href="/normalize" className="text-teal-400 hover:underline">Normalize</a> pages are your primary tools.
+        </p>
+      </div>
+
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-400">
           {error}

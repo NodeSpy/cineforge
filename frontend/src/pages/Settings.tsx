@@ -5,6 +5,7 @@ import {
   getSecrets,
   validateConfig,
   testRadarrConnection,
+  testSonarrConnection,
   testTmdbConnection,
   getQualityProfiles,
   getRootFolders,
@@ -25,12 +26,14 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [radarrTest, setRadarrTest] = useState('');
+  const [sonarrTest, setSonarrTest] = useState('');
   const [tmdbTest, setTmdbTest] = useState('');
   const [profiles, setProfiles] = useState<QualityProfile[]>([]);
   const [folders, setFolders] = useState<RootFolder[]>([]);
   const [showRadarrKey, setShowRadarrKey] = useState(false);
+  const [showSonarrKey, setShowSonarrKey] = useState(false);
   const [showTmdbKey, setShowTmdbKey] = useState(false);
-  const [revealedSecrets, setRevealedSecrets] = useState<{ radarr_api_key?: string; tmdb_api_key?: string }>({});
+  const [revealedSecrets, setRevealedSecrets] = useState<{ radarr_api_key?: string; sonarr_api_key?: string; tmdb_api_key?: string }>({});
   const dirtyFields = useRef<Set<keyof AppConfig>>(new Set());
 
   const defaultNormalize: NormalizeConfig = { target_lufs: -16.0, hwaccel: 'auto', audio_bitrate: '320k', backup: false, parallel: 1, video_mode: 'copy' };
@@ -51,6 +54,7 @@ export default function Settings() {
       dirtyFields.current.clear();
       setRevealedSecrets({});
       setShowRadarrKey(false);
+      setShowSonarrKey(false);
       setShowTmdbKey(false);
 
       setNormalizeForm(ncfg);
@@ -96,7 +100,7 @@ export default function Settings() {
   }
 
   async function fetchSecretsIfNeeded() {
-    if (revealedSecrets.radarr_api_key && revealedSecrets.tmdb_api_key) return revealedSecrets;
+    if (revealedSecrets.radarr_api_key !== undefined) return revealedSecrets;
     const secrets = await getSecrets();
     setRevealedSecrets(secrets);
     return secrets;
@@ -120,6 +124,26 @@ export default function Settings() {
       }
     }
     setShowRadarrKey(true);
+  }
+
+  async function toggleRevealSonarr() {
+    if (showSonarrKey) {
+      setShowSonarrKey(false);
+      if (!dirtyFields.current.has('sonarr_api_key') && config) {
+        setForm(prev => ({ ...prev, sonarr_api_key: config.sonarr_api_key }));
+      }
+      return;
+    }
+    if (!dirtyFields.current.has('sonarr_api_key')) {
+      try {
+        const secrets = await fetchSecretsIfNeeded();
+        setForm(prev => ({ ...prev, sonarr_api_key: secrets.sonarr_api_key }));
+      } catch {
+        setMessage({ type: 'error', text: 'Failed to fetch secret' });
+        return;
+      }
+    }
+    setShowSonarrKey(true);
   }
 
   async function toggleRevealTmdb() {
@@ -175,6 +199,7 @@ export default function Settings() {
           dirtyFields.current.clear();
           setRevealedSecrets({});
           setShowRadarrKey(false);
+          setShowSonarrKey(false);
           setShowTmdbKey(false);
           loadRadarrData();
         }));
@@ -211,6 +236,20 @@ export default function Settings() {
     }
   }
 
+  async function handleTestSonarr() {
+    setSonarrTest('Testing...');
+    try {
+      const result = await testSonarrConnection(form.sonarr_url || '', form.sonarr_api_key || '');
+      if (result.success) {
+        setSonarrTest(`Connected to ${result.appName} v${result.version}`);
+      } else {
+        setSonarrTest(`Connection failed: ${result.error}`);
+      }
+    } catch (err) {
+      setSonarrTest(err instanceof Error ? err.message : 'Test failed');
+    }
+  }
+
   async function handleTestTmdb() {
     setTmdbTest('Testing...');
     try {
@@ -242,7 +281,7 @@ export default function Settings() {
     <div className="space-y-8">
       <div>
         <h2 className="text-2xl font-bold text-gray-100">Settings</h2>
-        <p className="text-dark-400 mt-1">Configure your Radarr and TMDb connections</p>
+        <p className="text-dark-400 mt-1">Configure your Radarr, Sonarr, and TMDb connections</p>
       </div>
 
       {message && (
@@ -318,6 +357,73 @@ export default function Settings() {
             </span>
           )}
         </div>
+      </section>
+
+      {/* Sonarr Connection */}
+      <section className="bg-dark-900 border border-dark-800 rounded-xl p-6 space-y-5">
+        <h3 className="text-lg font-semibold text-gray-200 flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-orange-500"></span>
+          Sonarr Connection
+        </h3>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div>
+            <label className="block text-sm font-medium text-dark-300 mb-1.5">Sonarr URL</label>
+            <input
+              type="text"
+              value={form.sonarr_url || ''}
+              onChange={e => updateField('sonarr_url', e.target.value)}
+              placeholder="http://localhost:8989"
+              className="w-full px-4 py-2.5 bg-dark-800 border border-dark-700 rounded-lg text-gray-200 placeholder-dark-500 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:border-orange-500 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-dark-300 mb-1.5">Sonarr API Key</label>
+            <div className="relative">
+              <input
+                type={showSonarrKey ? 'text' : 'password'}
+                value={form.sonarr_api_key || ''}
+                onChange={e => updateField('sonarr_api_key', e.target.value)}
+                placeholder="Enter API key"
+                className="w-full px-4 py-2.5 pr-10 bg-dark-800 border border-dark-700 rounded-lg text-gray-200 placeholder-dark-500 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:border-orange-500 text-sm"
+              />
+              <button
+                type="button"
+                onClick={toggleRevealSonarr}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300 transition-colors"
+                tabIndex={-1}
+              >
+                {showSonarrKey ? (
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleTestSonarr}
+            disabled={!form.sonarr_url || !form.sonarr_api_key}
+            className="px-4 py-2 bg-dark-800 hover:bg-dark-700 border border-dark-600 rounded-lg text-sm font-medium text-gray-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Test Connection
+          </button>
+          {sonarrTest && (
+            <span className={`text-sm ${sonarrTest.includes('Connected') ? 'text-green-400' : sonarrTest === 'Testing...' ? 'text-dark-400' : 'text-red-400'}`}>
+              {sonarrTest}
+            </span>
+          )}
+        </div>
+
+        <p className="text-xs text-dark-500">Optional. Configure to browse your TV series library and normalize episode audio.</p>
       </section>
 
       {/* TMDb API */}

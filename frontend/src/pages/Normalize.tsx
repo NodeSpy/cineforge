@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  getNormalizeCandidates, getLibrary, startNormalize, stopNormalize,
+  getNormalizeCandidates, getSonarrNormalizeCandidates, getLibrary,
+  startNormalize, stopNormalize,
   subscribeNormalizeStatus, getNormalizeConfig, updateNormalizeConfig,
   getNormalizeJobs, getNormalizeJob, retryNormalize,
   NormalizeCandidate, NormalizeConfig, NormalizeStatusEvent, NormalizeItemStatus,
@@ -29,7 +30,7 @@ export default function Normalize() {
   const [topTab, setTopTab] = useState<TopTab>('normalize');
   const [searchParams] = useSearchParams();
   const [phase, setPhase] = useState<Phase>('candidates');
-  const [tab, setTab] = useState<'imported' | 'library'>(searchParams.get('source') === 'library' ? 'library' : 'imported');
+  const [tab, setTab] = useState<'imported' | 'library'>(searchParams.get('source') === 'library' || searchParams.get('source') === 'sonarr' ? 'library' : 'imported');
   const [candidates, setCandidates] = useState<NormalizeCandidate[]>([]);
   const [libraryMovies, setLibraryMovies] = useState<NormalizeCandidate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,6 +42,7 @@ export default function Normalize() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [customLufs, setCustomLufs] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
+  const [lufsOverrides, setLufsOverrides] = useState<Map<string, number>>(new Map());
 
   const [jobId, setJobId] = useState('');
   const [progress, setProgress] = useState<NormalizeStatusEvent | null>(null);
@@ -105,6 +107,14 @@ export default function Normalize() {
         setSelected(new Set(sel.map(m => m.file_path)));
         setTab('library');
       }).catch(err => setError(err.message)).finally(() => setLoading(false));
+    } else if (source === 'sonarr' && ids) {
+      const idList = ids.split(',').map(Number).filter(n => !isNaN(n));
+      setLoading(true);
+      getSonarrNormalizeCandidates(idList).then(sonarrCandidates => {
+        setLibraryMovies(sonarrCandidates);
+        setSelected(new Set(sonarrCandidates.map(c => c.file_path)));
+        setTab('library');
+      }).catch(err => setError(err.message)).finally(() => setLoading(false));
     } else {
       setLoading(true);
       getNormalizeCandidates()
@@ -125,9 +135,13 @@ export default function Normalize() {
   };
 
   const handleStart = useCallback(async () => {
-    const startItems = currentList.filter(c => selected.has(c.file_path)).map(c => ({
-      radarr_id: c.radarr_id, tmdb_id: c.tmdb_id, title: c.title, file_path: c.file_path,
-    }));
+    const startItems = currentList.filter(c => selected.has(c.file_path)).map(c => {
+      const override = lufsOverrides.get(c.file_path);
+      return {
+        radarr_id: c.radarr_id, tmdb_id: c.tmdb_id, title: c.title, file_path: c.file_path,
+        target_lufs: override,
+      };
+    });
     if (startItems.length === 0) return;
     try {
       await updateNormalizeConfig(config);
@@ -136,7 +150,7 @@ export default function Normalize() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to start');
     }
-  }, [currentList, selected, config, connectToJob]);
+  }, [currentList, selected, config, connectToJob, lufsOverrides]);
 
   const handleStop = async () => {
     if (jobId) {
@@ -367,7 +381,9 @@ export default function Normalize() {
 
       <div className="flex border-b border-dark-700 mb-4">
         <button onClick={() => setTab('imported')} className={'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ' + (tab === 'imported' ? 'border-teal-500 text-teal-400' : 'border-transparent text-dark-400 hover:text-gray-100')}>Imported</button>
-        <button onClick={() => setTab('library')} className={'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ' + (tab === 'library' ? 'border-teal-500 text-teal-400' : 'border-transparent text-dark-400 hover:text-gray-100')}>Library Selection</button>
+        <button onClick={() => setTab('library')} className={'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ' + (tab === 'library' ? 'border-teal-500 text-teal-400' : 'border-transparent text-dark-400 hover:text-gray-100')}>
+          {searchParams.get('source') === 'sonarr' ? 'Sonarr Selection' : 'Library Selection'}
+        </button>
       </div>
 
       {loading ? (
@@ -382,18 +398,41 @@ export default function Normalize() {
               <th className="p-3 text-left text-dark-400 font-medium">Title</th>
               <th className="p-3 text-left text-dark-400 font-medium w-16">Year</th>
               <th className="p-3 text-right text-dark-400 font-medium w-20">Size</th>
+              <th className="p-3 text-center text-dark-400 font-medium w-32">Target</th>
               <th className="p-3 text-center text-dark-400 font-medium w-24">Status</th>
             </tr></thead>
             <tbody>
-              {currentList.map((c, i) => (
-                <tr key={i} className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors">
-                  <td className="p-3"><input type="checkbox" checked={selected.has(c.file_path)} onChange={() => toggleSelect(c.file_path)} className="rounded bg-dark-700 border-dark-600" /></td>
-                  <td className="p-3"><div className="font-medium text-gray-100">{c.title}</div><div className="text-xs text-dark-400 truncate max-w-md">{c.file_path}</div></td>
-                  <td className="p-3 text-dark-300">{c.year}</td>
-                  <td className="p-3 text-right text-dark-300 text-xs">{formatBytes(c.file_size)}</td>
-                  <td className="p-3 text-center">{c.already_normalized ? <span className="px-2 py-0.5 text-xs rounded-full bg-green-500/15 text-green-400">Normalized</span> : <span className="px-2 py-0.5 text-xs rounded-full bg-dark-600 text-dark-300">Pending</span>}</td>
-                </tr>
-              ))}
+              {currentList.map((c, i) => {
+                const override = lufsOverrides.get(c.file_path);
+                const effectiveLufs = override ?? config.target_lufs;
+                const hasOverride = override !== undefined;
+                return (
+                  <tr key={i} className="border-b border-dark-700/50 hover:bg-dark-700/30 transition-colors">
+                    <td className="p-3"><input type="checkbox" checked={selected.has(c.file_path)} onChange={() => toggleSelect(c.file_path)} className="rounded bg-dark-700 border-dark-600" /></td>
+                    <td className="p-3"><div className="font-medium text-gray-100">{c.title}</div><div className="text-xs text-dark-400 truncate max-w-md">{c.file_path}</div></td>
+                    <td className="p-3 text-dark-300">{c.year}</td>
+                    <td className="p-3 text-right text-dark-300 text-xs">{formatBytes(c.file_size)}</td>
+                    <td className="p-3 text-center">
+                      <LufsOverrideCell
+                        filePath={c.file_path}
+                        globalLufs={config.target_lufs}
+                        override={override}
+                        hasOverride={hasOverride}
+                        effectiveLufs={effectiveLufs}
+                        onOverride={(val) => {
+                          setLufsOverrides(prev => {
+                            const next = new Map(prev);
+                            if (val === undefined) next.delete(c.file_path);
+                            else next.set(c.file_path, val);
+                            return next;
+                          });
+                        }}
+                      />
+                    </td>
+                    <td className="p-3 text-center">{c.already_normalized ? <span className="px-2 py-0.5 text-xs rounded-full bg-green-500/15 text-green-400">Normalized</span> : <span className="px-2 py-0.5 text-xs rounded-full bg-dark-600 text-dark-300">Pending</span>}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -595,6 +634,113 @@ function StatusBadge({ status }: { status: string }) {
     retried: 'bg-violet-500/15 text-violet-400',
   };
   return <span className={'px-2 py-0.5 text-xs rounded-full ' + (styles[status] || styles.pending)}>{status}</span>;
+}
+
+const OVERRIDE_PRESETS = [
+  { value: -16.0, label: 'Streaming' },
+  { value: -24.0, label: 'Broadcast' },
+  { value: -27.0, label: 'Cinematic' },
+];
+
+function LufsOverrideCell({ filePath, globalLufs, override, hasOverride, effectiveLufs, onOverride }: {
+  filePath: string;
+  globalLufs: number;
+  override: number | undefined;
+  hasOverride: boolean;
+  effectiveLufs: number;
+  onOverride: (val: number | undefined) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [customVal, setCustomVal] = useState(String(effectiveLufs));
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  useEffect(() => {
+    setCustomVal(String(effectiveLufs));
+  }, [effectiveLufs]);
+
+  return (
+    <div className="relative inline-block" ref={ref}>
+      <button
+        onClick={() => setOpen(!open)}
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono transition-colors ${
+          hasOverride
+            ? 'bg-teal-500/15 text-teal-400 border border-teal-500/30'
+            : 'text-dark-400 hover:text-dark-200'
+        }`}
+      >
+        {hasOverride && <span className="w-1.5 h-1.5 rounded-full bg-teal-400" />}
+        {effectiveLufs.toFixed(1)}
+        <svg className="w-3 h-3 ml-0.5 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute z-50 top-full left-1/2 -translate-x-1/2 mt-1.5 w-52 bg-dark-700 border border-dark-600 rounded-lg shadow-xl p-3 space-y-2">
+          <div className="text-[10px] font-semibold text-dark-400 uppercase tracking-wider">Override LUFS</div>
+          <div className="flex flex-wrap gap-1">
+            {OVERRIDE_PRESETS.map(p => (
+              <button
+                key={p.value}
+                onClick={() => { onOverride(p.value); setOpen(false); }}
+                className={`px-2 py-1 text-xs rounded border transition-colors ${
+                  effectiveLufs === p.value && hasOverride
+                    ? 'border-teal-500 bg-teal-500/15 text-teal-400'
+                    : 'border-dark-600 text-dark-300 hover:border-dark-500'
+                }`}
+              >
+                {p.label} ({p.value})
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <input
+              type="number"
+              step="0.5"
+              min="-70"
+              max="0"
+              value={customVal}
+              onChange={e => setCustomVal(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  const v = parseFloat(customVal);
+                  if (!isNaN(v) && v <= 0 && v >= -70) { onOverride(v); setOpen(false); }
+                }
+              }}
+              className="w-20 px-2 py-1 bg-dark-800 border border-dark-600 rounded text-xs text-gray-100 font-mono"
+            />
+            <span className="text-[10px] text-dark-400">LUFS</span>
+            <button
+              onClick={() => {
+                const v = parseFloat(customVal);
+                if (!isNaN(v) && v <= 0 && v >= -70) { onOverride(v); setOpen(false); }
+              }}
+              className="px-2 py-1 bg-teal-600 hover:bg-teal-500 text-white rounded text-[10px] font-medium"
+            >
+              Set
+            </button>
+          </div>
+          {hasOverride && (
+            <button
+              onClick={() => { onOverride(undefined); setOpen(false); }}
+              className="text-[10px] text-dark-400 hover:text-dark-200 transition-colors"
+            >
+              Reset to global ({globalLufs.toFixed(1)})
+            </button>
+          )}
+          <div className="absolute bottom-full left-1/2 -translate-x-1/2 w-2 h-2 bg-dark-700 border-l border-t border-dark-600 rotate-45 mb-[-5px]" />
+        </div>
+      )}
+    </div>
+  );
 }
 
 function InfoTip({ text }: { text: string }) {

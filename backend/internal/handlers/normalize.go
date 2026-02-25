@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"cineforge/internal/db"
 	"cineforge/internal/normalize"
 	radarrClient "cineforge/internal/radarr"
+	sonarrClient "cineforge/internal/sonarr"
 )
 
 type NormalizeCandidate struct {
@@ -36,10 +38,11 @@ type NormalizeStartRequest struct {
 }
 
 type NormalizeStartItem struct {
-	RadarrID int    `json:"radarr_id"`
-	TmdbID   int    `json:"tmdb_id"`
-	Title    string `json:"title"`
-	FilePath string `json:"file_path"`
+	RadarrID   int      `json:"radarr_id"`
+	TmdbID     int      `json:"tmdb_id"`
+	Title      string   `json:"title"`
+	FilePath   string   `json:"file_path"`
+	TargetLUFS *float64 `json:"target_lufs,omitempty"`
 }
 
 type NormalizeJobResponse struct {
@@ -141,6 +144,86 @@ func GetNormalizeCandidates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, candidates)
 }
 
+func GetSonarrNormalizeCandidates(w http.ResponseWriter, r *http.Request) {
+	cfg, err := config.Get()
+	if err != nil || cfg.SonarrURL == "" || cfg.SonarrAPIKey == "" {
+		writeJSON(w, http.StatusOK, []NormalizeCandidate{})
+		return
+	}
+	client := sonarrClient.NewClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+	seriesList, err := client.GetSeries()
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to fetch series: " + err.Error()})
+		return
+	}
+
+	idsParam := r.URL.Query().Get("ids")
+	idFilter := make(map[int]bool)
+	if idsParam != "" {
+		for _, s := range splitCSV(idsParam) {
+			if id, err := strconv.Atoi(s); err == nil {
+				idFilter[id] = true
+			}
+		}
+	}
+
+	ncfg := config.GetNormalizeConfig()
+	var candidates []NormalizeCandidate
+	for _, s := range seriesList {
+		if len(idFilter) > 0 && !idFilter[s.ID] {
+			continue
+		}
+		files, err := client.GetEpisodeFiles(s.ID)
+		if err != nil {
+			continue
+		}
+		posterURL := ""
+		for _, img := range s.Images {
+			if img.CoverType == "poster" && img.RemoteURL != "" {
+				posterURL = img.RemoteURL
+				break
+			}
+		}
+		for _, f := range files {
+			if f.Path == "" {
+				continue
+			}
+			normalized := false
+			if fi, err := os.Stat(f.Path); err == nil {
+				var count int
+				db.DB.QueryRow(
+					"SELECT COUNT(*) FROM normalize_history WHERE file_path=? AND file_size=? AND file_mtime=? AND target_lufs=?",
+					f.Path, fi.Size(), fi.ModTime().Unix(), ncfg.TargetLUFS,
+				).Scan(&count)
+				normalized = count > 0
+			}
+			title := fmt.Sprintf("%s - S%02dE%02d", s.Title, f.SeasonNumber, 0)
+			if f.RelativePath != "" {
+				title = fmt.Sprintf("%s - %s", s.Title, f.RelativePath)
+			}
+			candidates = append(candidates, NormalizeCandidate{
+				Title: title, Year: s.Year, TmdbID: 0, RadarrID: s.ID,
+				FilePath: f.Path, FileSize: f.Size, PosterURL: posterURL, Normalized: normalized,
+			})
+		}
+	}
+	if candidates == nil {
+		candidates = []NormalizeCandidate{}
+	}
+	writeJSON(w, http.StatusOK, candidates)
+}
+
+func splitCSV(s string) []string {
+	var parts []string
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return parts
+}
+
 func StartNormalize(w http.ResponseWriter, r *http.Request) {
 	var req NormalizeStartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -167,8 +250,12 @@ func StartNormalize(w http.ResponseWriter, r *http.Request) {
 	db.DB.Exec(`INSERT INTO normalize_jobs (id, status, total, config_snapshot, created_at, updated_at) VALUES (?, 'pending', ?, ?, ?, ?)`,
 		jobID, len(req.Items), string(cfgJSON), now, now)
 	for i, item := range req.Items {
+		itemLUFS := ncfg.TargetLUFS
+		if item.TargetLUFS != nil {
+			itemLUFS = *item.TargetLUFS
+		}
 		db.DB.Exec(`INSERT INTO normalize_items (job_id, item_index, file_path, movie_title, radarr_movie_id, tmdb_id, status, target_lufs) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
-			jobID, i, item.FilePath, item.Title, item.RadarrID, item.TmdbID, ncfg.TargetLUFS)
+			jobID, i, item.FilePath, item.Title, item.RadarrID, item.TmdbID, itemLUFS)
 	}
 	stopCh := make(chan struct{})
 	activeNormalizeJobsMu.Lock()
@@ -260,12 +347,20 @@ func runNormalizeJob(jobID string, items []NormalizeStartItem, cfg normalize.Nor
 			dur, _ := normalize.GetDuration(it.FilePath)
 			db.DB.Exec("UPDATE normalize_items SET duration_secs=? WHERE job_id=? AND item_index=?", dur, jobID, idx)
 
+			// Build per-item config, respecting per-item LUFS override from DB
+			itemCfg := cfg
+			var itemTargetLUFS float64
+			err := db.DB.QueryRow("SELECT target_lufs FROM normalize_items WHERE job_id=? AND item_index=?", jobID, idx).Scan(&itemTargetLUFS)
+			if err == nil && itemTargetLUFS != 0 {
+				itemCfg.TargetLUFS = itemTargetLUFS
+			}
+
 			onProgress := func(p normalize.FileProgress) {
 				db.DB.Exec("UPDATE normalize_items SET status=?, progress_pct=?, updated_at=? WHERE job_id=? AND item_index=?",
 					p.Phase, p.Percent, time.Now().Format(time.RFC3339), jobID, idx)
 			}
 
-			result := normalize.NormalizeFile(it.FilePath, cfg, dur, onProgress, nil)
+			result := normalize.NormalizeFile(it.FilePath, itemCfg, dur, onProgress, nil)
 
 			mu.Lock()
 			completed++
@@ -285,7 +380,7 @@ func runNormalizeJob(jobID string, items []NormalizeStartItem, cfg normalize.Nor
 					result.MeasuredLUFS, time.Now().Format(time.RFC3339), jobID, idx)
 				if fi, err := os.Stat(it.FilePath); err == nil {
 					db.DB.Exec(`INSERT OR REPLACE INTO normalize_history (file_path, file_size, file_mtime, target_lufs, measured_lufs, normalized_at, job_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-						it.FilePath, fi.Size(), fi.ModTime().Unix(), cfg.TargetLUFS, result.MeasuredLUFS, time.Now().Format(time.RFC3339), jobID)
+						it.FilePath, fi.Size(), fi.ModTime().Unix(), itemCfg.TargetLUFS, result.MeasuredLUFS, time.Now().Format(time.RFC3339), jobID)
 				}
 			case "failed":
 				db.DB.Exec("UPDATE normalize_items SET status='failed', error=?, updated_at=? WHERE job_id=? AND item_index=?",

@@ -7,6 +7,7 @@ import (
 
 	"cineforge/internal/config"
 	radarrClient "cineforge/internal/radarr"
+	sonarrClient "cineforge/internal/sonarr"
 	"cineforge/internal/tmdb"
 )
 
@@ -36,7 +37,7 @@ func UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	fields := make(map[string]string)
 	for key, val := range incoming {
 		switch key {
-		case "radarr_api_key", "tmdb_api_key":
+		case "radarr_api_key", "sonarr_api_key", "tmdb_api_key":
 			s, _ := val.(string)
 			if s == "" || isMasked(s) {
 				continue
@@ -76,6 +77,7 @@ func GetSecrets(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"radarr_api_key": cfg.RadarrAPIKey,
+		"sonarr_api_key": cfg.SonarrAPIKey,
 		"tmdb_api_key":   cfg.TMDbAPIKey,
 	})
 }
@@ -121,6 +123,31 @@ func ValidateConfig(w http.ResponseWriter, r *http.Request) {
 			Service: "Radarr",
 			Status:  "warning",
 			Message: "Radarr URL or API key not configured",
+		})
+	}
+
+	// Test Sonarr
+	if cfg.SonarrURL != "" && cfg.SonarrAPIKey != "" {
+		client := sonarrClient.NewClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+		status, err := client.GetStatus()
+		if err != nil {
+			results = append(results, ValidationResult{
+				Service: "Sonarr",
+				Status:  "error",
+				Message: fmt.Sprintf("Connection failed: %v", err),
+			})
+		} else {
+			results = append(results, ValidationResult{
+				Service: "Sonarr",
+				Status:  "ok",
+				Message: fmt.Sprintf("Connected to %s v%s", status.AppName, status.Version),
+			})
+		}
+	} else {
+		results = append(results, ValidationResult{
+			Service: "Sonarr",
+			Status:  "warning",
+			Message: "Sonarr URL or API key not configured (optional)",
 		})
 	}
 
