@@ -731,6 +731,27 @@ export interface SonarrLibraryResponse {
   cached_at?: string;
 }
 
+
+export interface SonarrEpisode {
+  id: number;
+  seriesId: number;
+  tvdbId?: number;
+  episodeFileId: number;
+  seasonNumber: number;
+  episodeNumber: number;
+  title: string;
+  overview?: string;
+  hasFile: boolean;
+  monitored: boolean;
+  airDate?: string;
+}
+
+export interface SonarrSeriesDetail {
+  series: SonarrSeries;
+  episodes: SonarrEpisode[];
+  files: SonarrEpisodeFile[];
+}
+
 // Sonarr API functions
 
 export async function testSonarrConnection(url: string, apiKey: string): Promise<{ success: boolean; version?: string; appName?: string; error?: string }> {
@@ -765,5 +786,11 @@ export async function getSonarrNormalizeCandidates(ids?: number[]): Promise<Norm
   const params = ids && ids.length > 0 ? `?ids=${ids.join(',')}` : '';
   const res = await fetch(`${BASE}/normalize/sonarr-candidates${params}`);
   if (!res.ok) throw new Error('Failed to fetch Sonarr normalize candidates');
+  return res.json();
+}
+
+export async function getSonarrSeriesDetail(seriesId: number): Promise<SonarrSeriesDetail> {
+  const res = await fetch(`${BASE}/sonarr/series/${seriesId}/episodes`);
+  if (!res.ok) throw new Error('Failed to fetch series detail');
   return res.json();
 }

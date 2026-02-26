@@ -30,7 +30,7 @@ export default function Normalize() {
   const [topTab, setTopTab] = useState<TopTab>('normalize');
   const [searchParams] = useSearchParams();
   const [phase, setPhase] = useState<Phase>('candidates');
-  const [tab, setTab] = useState<'imported' | 'library'>(searchParams.get('source') === 'library' || searchParams.get('source') === 'sonarr' ? 'library' : 'imported');
+  const [tab, setTab] = useState<'imported' | 'library'>(['library', 'sonarr', 'sonarr-detail'].includes(searchParams.get('source') || '') ? 'library' : 'imported');
   const [candidates, setCandidates] = useState<NormalizeCandidate[]>([]);
   const [libraryMovies, setLibraryMovies] = useState<NormalizeCandidate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -115,6 +115,22 @@ export default function Normalize() {
         setSelected(new Set(sonarrCandidates.map(c => c.file_path)));
         setTab('library');
       }).catch(err => setError(err.message)).finally(() => setLoading(false));
+    } else if (source === 'sonarr-detail') {
+      try {
+        const raw = sessionStorage.getItem('cineforge:sonarr-detail');
+        if (raw) {
+          const items = JSON.parse(raw) as Array<{ title: string; file_path: string; file_size: number; radarr_id: number; tmdb_id: number }>;
+          const candidates = items.map(it => ({
+            title: it.title, year: 0, tmdb_id: it.tmdb_id, radarr_id: it.radarr_id,
+            file_path: it.file_path, file_size: it.file_size, poster_url: '', already_normalized: false,
+          }));
+          setLibraryMovies(candidates);
+          setSelected(new Set(candidates.map(c => c.file_path)));
+          setTab('library');
+          sessionStorage.removeItem('cineforge:sonarr-detail');
+        }
+      } catch { /* ignore parse errors */ }
+      setLoading(false);
     } else {
       setLoading(true);
       getNormalizeCandidates()
@@ -382,7 +398,7 @@ export default function Normalize() {
       <div className="flex border-b border-dark-700 mb-4">
         <button onClick={() => setTab('imported')} className={'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ' + (tab === 'imported' ? 'border-teal-500 text-teal-400' : 'border-transparent text-dark-400 hover:text-gray-100')}>Imported</button>
         <button onClick={() => setTab('library')} className={'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ' + (tab === 'library' ? 'border-teal-500 text-teal-400' : 'border-transparent text-dark-400 hover:text-gray-100')}>
-          {searchParams.get('source') === 'sonarr' ? 'Sonarr Selection' : 'Library Selection'}
+          {searchParams.get('source')?.startsWith('sonarr') ? 'Sonarr Selection' : 'Library Selection'}
         </button>
       </div>
 

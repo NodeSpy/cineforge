@@ -89,6 +89,7 @@ func main() {
 			r.Post("/sonarr/tags", handlers.CreateSonarrTag)
 			r.Get("/sonarr/library", handlers.GetSonarrLibrary)
 			r.Post("/sonarr/library/refresh", handlers.RefreshSonarrLibrary)
+			r.Get("/sonarr/series/{id}/episodes", handlers.GetSonarrSeriesDetail)
 
 			r.Get("/normalize/candidates", handlers.GetNormalizeCandidates)
 			r.Get("/normalize/sonarr-candidates", handlers.GetSonarrNormalizeCandidates)

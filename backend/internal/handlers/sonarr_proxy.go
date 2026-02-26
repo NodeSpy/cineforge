@@ -3,7 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"cineforge/internal/config"
 	"cineforge/internal/db"
@@ -241,6 +244,53 @@ func loadCachedSonarrLibrary() (*SonarrLibraryResponse, error) {
 		FilterOptions:   buildSonarrFilterOptions(series),
 		CachedAt:        cachedAt,
 	}, nil
+}
+
+type SeriesDetailResponse struct {
+	Series   sonarrClient.Series       `json:"series"`
+	Episodes []sonarrClient.Episode    `json:"episodes"`
+	Files    []sonarrClient.EpisodeFile `json:"files"`
+}
+
+func GetSonarrSeriesDetail(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid series ID"})
+		return
+	}
+
+	cfg, err := config.Get()
+	if err != nil || cfg.SonarrURL == "" || cfg.SonarrAPIKey == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Sonarr not configured"})
+		return
+	}
+
+	client := sonarrClient.NewClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+
+	s, err := client.GetSeriesByID(id)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	episodes, err := client.GetEpisodes(id)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	files, err := client.GetEpisodeFiles(id)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, SeriesDetailResponse{
+		Series:   *s,
+		Episodes: episodes,
+		Files:    files,
+	})
 }
 
 func buildSonarrFilterOptions(series []sonarrClient.Series) SonarrFilterOptions {
