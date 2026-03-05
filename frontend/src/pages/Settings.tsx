@@ -36,7 +36,7 @@ export default function Settings() {
   const [revealedSecrets, setRevealedSecrets] = useState<{ radarr_api_key?: string; sonarr_api_key?: string; tmdb_api_key?: string }>({});
   const dirtyFields = useRef<Set<keyof AppConfig>>(new Set());
 
-  const defaultNormalize: NormalizeConfig = { target_lufs: -16.0, hwaccel: 'auto', audio_bitrate: '320k', backup: false, parallel: 1, video_mode: 'copy' };
+  const defaultNormalize: NormalizeConfig = { target_lufs: -16.0, hwaccel: 'auto', audio_bitrate: '320k', backup: false, parallel: 1, video_mode: 'copy', measure_mode: 'auto' };
   const [normalizeForm, setNormalizeForm] = useState<NormalizeConfig>(defaultNormalize);
   const normalizeChanged = useRef(false);
   const [clearingHistory, setClearingHistory] = useState(false);
@@ -603,6 +603,35 @@ export default function Settings() {
                 <span className="text-xs text-dark-400">LUFS</span>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-dark-300 mb-2 flex items-center gap-2">
+            Measurement Strategy
+            <span className="relative inline-block group">
+              <span className="w-4 h-4 rounded-full bg-dark-700 text-dark-400 hover:text-dark-200 text-[10px] font-bold inline-flex items-center justify-center cursor-help">i</span>
+              <span className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2 bg-dark-700 border border-dark-600 rounded-lg shadow-xl text-xs text-dark-200 leading-relaxed hidden group-hover:block">
+                Controls how files are checked before normalization. Smart mode reads embedded metadata from previously normalized files for instant detection, then samples a short portion to estimate loudness. Full mode analyzes the entire audio track.
+                <span className="absolute top-full left-1/2 -translate-x-1/2 w-2 h-2 bg-dark-700 border-r border-b border-dark-600 rotate-45 -mt-1" />
+              </span>
+            </span>
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {([
+              { value: 'auto', label: 'Smart', tag: 'recommended', desc: 'Checks file metadata and samples audio. Skips files already at target.' },
+              { value: 'full', label: 'Always Measure', tag: 'most accurate', desc: 'Analyzes the complete audio track. Slowest for large batches.' },
+              { value: 'sample', label: 'Quick Sample', tag: 'fastest', desc: 'Samples a portion of the audio. Full analysis only when needed.' },
+            ] as const).map(mode => (
+              <button
+                key={mode.value}
+                onClick={() => updateNormalizeField('measure_mode', mode.value)}
+                className={'p-3 rounded-lg border text-left transition-colors ' + (normalizeForm.measure_mode === mode.value ? 'border-teal-500 bg-teal-500/10' : 'border-dark-700 hover:border-dark-600')}
+              >
+                <div className="text-sm text-gray-100 font-medium">{mode.label} <span className="text-dark-400 font-normal text-xs">({mode.tag})</span></div>
+                <div className="text-xs text-dark-400 mt-0.5">{mode.desc}</div>
+              </button>
+            ))}
           </div>
         </div>
 

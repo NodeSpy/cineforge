@@ -204,6 +204,7 @@ type NormalizeConfig struct {
 	Backup       bool    `json:"backup"`
 	Parallel     int     `json:"parallel"`
 	VideoMode    string  `json:"video_mode"`
+	MeasureMode  string  `json:"measure_mode"`
 }
 
 func GetNormalizeConfig() NormalizeConfig {
@@ -214,6 +215,7 @@ func GetNormalizeConfig() NormalizeConfig {
 		Backup:       false,
 		Parallel:     1,
 		VideoMode:    "copy",
+		MeasureMode:  "auto",
 	}
 
 	rows, err := db.DB.Query("SELECT key, value FROM config WHERE key LIKE 'normalize_%'")
@@ -244,6 +246,8 @@ func GetNormalizeConfig() NormalizeConfig {
 			}
 		case "normalize_video_mode":
 			cfg.VideoMode = value
+		case "normalize_measure_mode":
+			cfg.MeasureMode = value
 		}
 	}
 	return cfg

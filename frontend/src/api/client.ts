@@ -241,6 +241,7 @@ export interface NormalizeConfig {
   backup: boolean;
   parallel: number;
   video_mode: string;
+  measure_mode: string;
 }
 
 export interface NormalizeJob {

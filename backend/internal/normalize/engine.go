@@ -47,6 +47,7 @@ type NormalizeConfig struct {
 	Backup       bool    `json:"backup"`
 	Parallel     int     `json:"parallel"`
 	VideoMode    string  `json:"video_mode"`
+	MeasureMode  string  `json:"measure_mode"`
 }
 
 func DefaultConfig() NormalizeConfig {
@@ -57,6 +58,7 @@ func DefaultConfig() NormalizeConfig {
 		Backup:       false,
 		Parallel:     1,
 		VideoMode:    "copy",
+		MeasureMode:  "auto",
 	}
 }
 
@@ -108,7 +110,117 @@ func MeasureLoudness(filePath string, targetLUFS float64) (*LoudnessInfo, error)
 	return &info, nil
 }
 
-func buildNormalizeArgs(filePath, tempPath string, info *LoudnessInfo, cfg NormalizeConfig) []string {
+type MetadataResult struct {
+	EstimatedLUFS float64
+	MatchesTarget bool
+	Found         bool
+}
+
+// ReadLoudnessMetadata checks for embedded loudness tags via ffprobe.
+// Priority: CINEFORGE_TARGET_LUFS (exact match) > R128_TRACK_GAIN > REPLAYGAIN_TRACK_GAIN.
+func ReadLoudnessMetadata(filePath string, targetLUFS float64) MetadataResult {
+	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "a:0",
+		"-show_entries", "stream_tags=CINEFORGE_TARGET_LUFS,CINEFORGE_MEASURED_LUFS,R128_TRACK_GAIN,REPLAYGAIN_TRACK_GAIN",
+		"-of", "json", "-i", filePath)
+	out, err := cmd.Output()
+	if err != nil {
+		return MetadataResult{}
+	}
+
+	var probe struct {
+		Streams []struct {
+			Tags map[string]string `json:"tags"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil || len(probe.Streams) == 0 {
+		return MetadataResult{}
+	}
+
+	tags := probe.Streams[0].Tags
+	if tags == nil {
+		return MetadataResult{}
+	}
+
+	if cfTarget, ok := tags["CINEFORGE_TARGET_LUFS"]; ok {
+		if v, err := strconv.ParseFloat(cfTarget, 64); err == nil {
+			matches := math.Abs(v-targetLUFS) < 0.1
+			estimatedLUFS := targetLUFS
+			if measured, ok := tags["CINEFORGE_MEASURED_LUFS"]; ok {
+				if mv, err := strconv.ParseFloat(measured, 64); err == nil {
+					estimatedLUFS = mv
+				}
+			}
+			return MetadataResult{EstimatedLUFS: estimatedLUFS, MatchesTarget: matches, Found: true}
+		}
+	}
+
+	// R128_TRACK_GAIN is in Q7.8 fixed-point format (units of 1/256 dB)
+	if r128, ok := tags["R128_TRACK_GAIN"]; ok {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(r128), 64); err == nil {
+			gainDB := v / 256.0
+			estimated := -23.0 - gainDB // R128 reference is -23 LUFS
+			return MetadataResult{EstimatedLUFS: estimated, Found: true}
+		}
+	}
+
+	if rg, ok := tags["REPLAYGAIN_TRACK_GAIN"]; ok {
+		cleaned := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rg), "dB"))
+		if v, err := strconv.ParseFloat(cleaned, 64); err == nil {
+			estimated := -18.0 - v // ReplayGain reference is -18 LUFS (approx)
+			return MetadataResult{EstimatedLUFS: estimated, Found: true}
+		}
+	}
+
+	return MetadataResult{}
+}
+
+// SampleMeasureLoudness measures ~60 seconds from the middle of the file for a quick LUFS estimate.
+func SampleMeasureLoudness(filePath string, targetLUFS float64) (float64, error) {
+	duration, err := GetDuration(filePath)
+	if err != nil || duration <= 0 {
+		return 0, fmt.Errorf("could not determine duration: %w", err)
+	}
+
+	sampleDur := 60.0
+	if duration < sampleDur {
+		sampleDur = duration
+	}
+	seekPos := (duration - sampleDur) / 2
+	if seekPos < 0 {
+		seekPos = 0
+	}
+
+	af := fmt.Sprintf("loudnorm=I=%.1f:TP=-1.5:LRA=11:print_format=json", targetLUFS)
+	cmd := exec.Command("ffmpeg", "-hide_banner",
+		"-ss", fmt.Sprintf("%.1f", seekPos), "-t", fmt.Sprintf("%.1f", sampleDur),
+		"-i", filePath, "-map", "0:a:0", "-af", af, "-f", "null", "-")
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return 0, fmt.Errorf("sample measurement failed: %w", err)
+	}
+
+	output := stderr.String()
+	start := strings.LastIndex(output, "{")
+	end := strings.LastIndex(output, "}")
+	if start == -1 || end == -1 || end <= start {
+		return 0, fmt.Errorf("could not find loudnorm JSON in sample output")
+	}
+
+	var info LoudnessInfo
+	if err := json.Unmarshal([]byte(output[start:end+1]), &info); err != nil {
+		return 0, fmt.Errorf("failed to parse sample loudnorm JSON: %w", err)
+	}
+
+	lufs, err := strconv.ParseFloat(info.InputI, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse sample input_i: %w", err)
+	}
+	return lufs, nil
+}
+
+func buildNormalizeArgs(filePath, tempPath string, info *LoudnessInfo, measuredLUFS float64, cfg NormalizeConfig) []string {
 	af := fmt.Sprintf(
 		"loudnorm=I=%.1f:TP=-1.5:LRA=11:measured_I=%s:measured_TP=%s:measured_LRA=%s:measured_thresh=%s:offset=%s:linear=true",
 		cfg.TargetLUFS, info.InputI, info.InputTP, info.InputLRA, info.InputThresh, info.TargetOffset,
@@ -140,7 +252,10 @@ func buildNormalizeArgs(filePath, tempPath string, info *LoudnessInfo, cfg Norma
 		}
 	}
 
-	args = append(args, "-af", af, "-c:a", "aac", "-b:a", cfg.AudioBitrate, tempPath)
+	args = append(args, "-af", af, "-c:a", "aac", "-b:a", cfg.AudioBitrate,
+		"-metadata:s:a:0", fmt.Sprintf("CINEFORGE_TARGET_LUFS=%.1f", cfg.TargetLUFS),
+		"-metadata:s:a:0", fmt.Sprintf("CINEFORGE_MEASURED_LUFS=%.1f", measuredLUFS),
+		tempPath)
 	return args
 }
 
@@ -157,6 +272,50 @@ func NormalizeFile(filePath string, cfg NormalizeConfig, duration float64,
 		return result
 	}
 
+	mode := cfg.MeasureMode
+	if mode == "" {
+		mode = "full"
+	}
+
+	// Pre-screening for "auto" and "sample" modes
+	if mode == "auto" || mode == "sample" {
+		if onProgress != nil {
+			onProgress(FileProgress{FilePath: filePath, Phase: "pre-screening"})
+		}
+
+		skipPrescreen := false
+
+		if mode == "auto" {
+			meta := ReadLoudnessMetadata(filePath, cfg.TargetLUFS)
+			if meta.Found && meta.MatchesTarget {
+				log.Printf("[normalize] %s has matching CINEFORGE metadata (target %.1f), skipping", filePath, cfg.TargetLUFS)
+				result.MeasuredLUFS = meta.EstimatedLUFS
+				result.Status = "done"
+				result.Duration = duration
+				return result
+			}
+			if meta.Found {
+				log.Printf("[normalize] %s has metadata (estimated %.1f LUFS) but target changed, will re-normalize", filePath, meta.EstimatedLUFS)
+			}
+		}
+
+		if !skipPrescreen {
+			sampleLUFS, sampleErr := SampleMeasureLoudness(filePath, cfg.TargetLUFS)
+			if sampleErr == nil {
+				result.MeasuredLUFS = sampleLUFS
+				if math.Abs(sampleLUFS-cfg.TargetLUFS) <= 0.5 {
+					log.Printf("[normalize] %s sample at %.1f LUFS (target %.1f), skipping", filePath, sampleLUFS, cfg.TargetLUFS)
+					result.Status = "done"
+					result.Duration = duration
+					return result
+				}
+			} else {
+				log.Printf("[normalize] %s sample measurement failed, falling back to full: %v", filePath, sampleErr)
+			}
+		}
+	}
+
+	// Full measurement (always reached for "full" mode, fallthrough for others)
 	if onProgress != nil {
 		onProgress(FileProgress{FilePath: filePath, Phase: "measuring"})
 	}
@@ -172,7 +331,6 @@ func NormalizeFile(filePath string, cfg NormalizeConfig, duration float64,
 	result.MeasuredLUFS = measuredLUFS
 	result.Duration = duration
 
-	// Skip re-encode if already within 0.5 LU of target (EBU R128 tolerance)
 	if math.Abs(measuredLUFS-cfg.TargetLUFS) <= 0.5 {
 		log.Printf("[normalize] %s already at %.1f LUFS (target %.1f), skipping re-encode", filePath, measuredLUFS, cfg.TargetLUFS)
 		result.Status = "done"
@@ -188,7 +346,7 @@ func NormalizeFile(filePath string, cfg NormalizeConfig, duration float64,
 		onProgress(FileProgress{FilePath: filePath, Phase: "normalizing"})
 	}
 
-	args := buildNormalizeArgs(filePath, tempPath, info, cfg)
+	args := buildNormalizeArgs(filePath, tempPath, info, measuredLUFS, cfg)
 	cmd := exec.Command("ffmpeg", args...)
 
 	var stderrBuf bytes.Buffer

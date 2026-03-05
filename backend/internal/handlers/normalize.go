@@ -242,6 +242,7 @@ func StartNormalize(w http.ResponseWriter, r *http.Request) {
 		ncfg = normalize.NormalizeConfig{
 			TargetLUFS: cfgDB.TargetLUFS, HWAccel: cfgDB.HWAccel, AudioBitrate: cfgDB.AudioBitrate,
 			Backup: cfgDB.Backup, Parallel: cfgDB.Parallel, VideoMode: cfgDB.VideoMode,
+			MeasureMode: cfgDB.MeasureMode,
 		}
 	}
 	jobID := uuid.New().String()
@@ -473,6 +474,7 @@ func RetryNormalize(w http.ResponseWriter, r *http.Request) {
 		ncfg = normalize.NormalizeConfig{
 			TargetLUFS: cfgDB.TargetLUFS, HWAccel: cfgDB.HWAccel, AudioBitrate: cfgDB.AudioBitrate,
 			Backup: cfgDB.Backup, Parallel: cfgDB.Parallel, VideoMode: cfgDB.VideoMode,
+			MeasureMode: cfgDB.MeasureMode,
 		}
 	}
 
@@ -664,6 +666,7 @@ func UpdateNormalizeConfig(w http.ResponseWriter, r *http.Request) {
 		"normalize_backup":        strconv.FormatBool(cfg.Backup),
 		"normalize_parallel":      strconv.Itoa(cfg.Parallel),
 		"normalize_video_mode":    cfg.VideoMode,
+		"normalize_measure_mode":  cfg.MeasureMode,
 	}
 	if err := config.SetFields(fields); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to save config"})

@@ -37,7 +37,7 @@ export default function Normalize() {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const [config, setConfig] = useState<NormalizeConfig>({ target_lufs: -16.0, hwaccel: 'auto', audio_bitrate: '320k', backup: false, parallel: 1, video_mode: 'copy' });
+  const [config, setConfig] = useState<NormalizeConfig>({ target_lufs: -16.0, hwaccel: 'auto', audio_bitrate: '320k', backup: false, parallel: 1, video_mode: 'copy', measure_mode: 'auto' });
   const [showSettings, setShowSettings] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [customLufs, setCustomLufs] = useState(false);
@@ -220,7 +220,7 @@ export default function Normalize() {
                 <tr key={i} className="border-b border-dark-700/50">
                   <td className="p-3"><div className="text-gray-100 font-medium">{item.title}</div><div className="text-xs text-dark-400 truncate max-w-md">{item.file_path}</div></td>
                   <td className="p-3">
-                    {(item.status === 'measuring' || item.status === 'normalizing') ? (
+                    {(item.status === 'pre-screening' || item.status === 'measuring' || item.status === 'normalizing') ? (
                       <div>
                         <div className="flex items-center gap-2 mb-1">
                           <StatusBadge status={item.status} />
@@ -324,6 +324,29 @@ export default function Normalize() {
                   )}
                 </div>
               </label>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <h3 className="text-sm font-semibold text-gray-100">Measurement Strategy</h3>
+              <InfoTip text="Controls how files are checked before normalization. Smart mode reads embedded metadata from previously normalized files for instant detection, then samples a short portion to estimate loudness. Full mode analyzes the entire audio track." />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {([
+                { value: 'auto', label: 'Smart', tag: 'recommended', desc: 'Checks file metadata and samples audio. Skips files already at target.' },
+                { value: 'full', label: 'Always Measure', tag: 'most accurate', desc: 'Analyzes the complete audio track. Slowest for large batches.' },
+                { value: 'sample', label: 'Quick Sample', tag: 'fastest', desc: 'Samples a portion of the audio. Full analysis only when needed.' },
+              ] as const).map(mode => (
+                <button
+                  key={mode.value}
+                  onClick={() => setConfig({ ...config, measure_mode: mode.value })}
+                  className={'p-3 rounded-lg border text-left transition-colors ' + (config.measure_mode === mode.value ? 'border-teal-500 bg-teal-500/10' : 'border-dark-700 hover:border-dark-600')}
+                >
+                  <div className="text-sm text-gray-100 font-medium">{mode.label} <span className="text-dark-400 font-normal text-xs">({mode.tag})</span></div>
+                  <div className="text-xs text-dark-400 mt-0.5">{mode.desc}</div>
+                </button>
+              ))}
             </div>
           </div>
 
@@ -642,6 +665,7 @@ function NormalizeHistory({ onRetry }: { onRetry: (newJobId: string) => void }) 
 function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
     pending: 'bg-dark-600 text-dark-300',
+    'pre-screening': 'bg-cyan-500/15 text-cyan-400',
     measuring: 'bg-blue-500/15 text-blue-400',
     normalizing: 'bg-teal-500/15 text-teal-400',
     done: 'bg-green-500/15 text-green-400',
