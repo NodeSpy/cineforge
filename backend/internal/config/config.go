@@ -95,7 +95,11 @@ var pbkdf2Salt = []byte("cineforge-encryption-salt-v1")
 
 func getEncryptionKey() []byte {
 	secret := resolveSecret()
-	return pbkdf2.Key([]byte(secret), pbkdf2Salt, 100_000, 32, sha256.New)
+	key, err := pbkdf2.Key(sha256.New, secret, pbkdf2Salt, 100_000, 32)
+	if err != nil {
+		log.Fatalf("Failed to derive encryption key: %v", err)
+	}
+	return key
 }
 
 func encrypt(plaintext string) (string, error) {
