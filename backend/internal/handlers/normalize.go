@@ -799,5 +799,3 @@ func ClearNormalizeHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"cleared": true})
 }
- true})
-}
