@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
@@ -220,6 +221,22 @@ func SampleMeasureLoudness(filePath string, targetLUFS float64) (float64, error)
 	return lufs, nil
 }
 
+func validateLoudnessInfo(info *LoudnessInfo) error {
+	fields := map[string]string{
+		"input_i":       info.InputI,
+		"input_tp":      info.InputTP,
+		"input_lra":     info.InputLRA,
+		"input_thresh":  info.InputThresh,
+		"target_offset": info.TargetOffset,
+	}
+	for name, val := range fields {
+		if _, err := strconv.ParseFloat(val, 64); err != nil {
+			return fmt.Errorf("invalid loudness field %s=%q: %w", name, val, err)
+		}
+	}
+	return nil
+}
+
 func buildNormalizeArgs(filePath, tempPath string, info *LoudnessInfo, measuredLUFS float64, cfg NormalizeConfig) []string {
 	af := fmt.Sprintf(
 		"loudnorm=I=%.1f:TP=-1.5:LRA=11:measured_I=%s:measured_TP=%s:measured_LRA=%s:measured_thresh=%s:offset=%s:linear=true",
@@ -327,6 +344,12 @@ func NormalizeFile(filePath string, cfg NormalizeConfig, duration float64,
 		return result
 	}
 
+	if err := validateLoudnessInfo(info); err != nil {
+		result.Status = "failed"
+		result.Error = err.Error()
+		return result
+	}
+
 	measuredLUFS, _ := strconv.ParseFloat(info.InputI, 64)
 	result.MeasuredLUFS = measuredLUFS
 	result.Duration = duration
@@ -340,7 +363,14 @@ func NormalizeFile(filePath string, cfg NormalizeConfig, duration float64,
 	dir := filepath.Dir(filePath)
 	ext := filepath.Ext(filePath)
 	base := strings.TrimSuffix(filepath.Base(filePath), ext)
-	tempPath := filepath.Join(dir, base+"_temp"+ext)
+	tmpFile, err := os.CreateTemp(dir, base+"_norm_*"+ext)
+	if err != nil {
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("failed to create temp file: %v", err)
+		return result
+	}
+	tempPath := tmpFile.Name()
+	tmpFile.Close()
 
 	if onProgress != nil {
 		onProgress(FileProgress{FilePath: filePath, Phase: "normalizing"})
@@ -481,9 +511,23 @@ func RunJob(files []struct {
 }
 
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	srcFile, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	defer srcFile.Close()
+
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, srcInfo.Mode())
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	return err
 }

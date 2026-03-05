@@ -11,14 +11,14 @@ import (
 func GetRadarrStatus(w http.ResponseWriter, r *http.Request) {
 	cfg, err := config.Get()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get config"})
+		writeError(w, http.StatusInternalServerError, "Failed to get config", err)
 		return
 	}
 
 	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
 	status, err := client.GetStatus()
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadGateway, "Failed to connect to Radarr", err)
 		return
 	}
 
@@ -50,14 +50,15 @@ func TestRadarrConnection(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Radarr URL is required"})
 		return
 	}
+	if err := validateServiceURL(req.RadarrURL); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid URL"})
+		return
+	}
 
 	client := radarrClient.NewClient(req.RadarrURL, req.RadarrAPIKey)
 	status, err := client.GetStatus()
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success": false,
-			"error":   err.Error(),
-		})
+		writeError(w, http.StatusOK, "Connection test failed", err)
 		return
 	}
 
@@ -78,7 +79,7 @@ func GetQualityProfiles(w http.ResponseWriter, r *http.Request) {
 	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
 	profiles, err := client.GetQualityProfiles()
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadGateway, "Failed to fetch quality profiles", err)
 		return
 	}
 
@@ -88,14 +89,14 @@ func GetQualityProfiles(w http.ResponseWriter, r *http.Request) {
 func GetRootFolders(w http.ResponseWriter, r *http.Request) {
 	cfg, err := config.Get()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get config"})
+		writeError(w, http.StatusInternalServerError, "Failed to get config", err)
 		return
 	}
 
 	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
 	folders, err := client.GetRootFolders()
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadGateway, "Failed to fetch root folders", err)
 		return
 	}
 
@@ -112,7 +113,7 @@ func GetTags(w http.ResponseWriter, r *http.Request) {
 	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
 	tags, err := client.GetTags()
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadGateway, "Failed to fetch tags", err)
 		return
 	}
 
@@ -139,7 +140,7 @@ func CreateTag(w http.ResponseWriter, r *http.Request) {
 	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
 	tag, err := client.CreateTag(req.Label)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadGateway, "Failed to create tag", err)
 		return
 	}
 

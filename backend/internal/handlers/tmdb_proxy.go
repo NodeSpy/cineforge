@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"cineforge/internal/config"
@@ -36,9 +37,10 @@ func TestTMDbConnection(w http.ResponseWriter, r *http.Request) {
 	client := tmdb.NewClient(req.APIKey)
 	result, err := client.SearchMovie("test", "")
 	if err != nil {
+		log.Printf("TMDb connection test failed: %v", err)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"success": false,
-			"error":   err.Error(),
+			"error":   "Connection test failed",
 		})
 		return
 	}

@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 
 	"cineforge/internal/config"
@@ -10,6 +11,19 @@ import (
 	sonarrClient "cineforge/internal/sonarr"
 	"cineforge/internal/tmdb"
 )
+
+var allowedConfigKeys = map[string]bool{
+	"radarr_url":          true,
+	"radarr_api_key":      true,
+	"sonarr_url":          true,
+	"sonarr_api_key":      true,
+	"tmdb_api_key":        true,
+	"quality_profile_id":  true,
+	"root_folder_path":    true,
+	"min_availability":    true,
+	"search_on_add":       true,
+	"monitored":           true,
+}
 
 func GetConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := config.GetMasked()
@@ -52,6 +66,10 @@ func UpdateConfig(w http.ResponseWriter, r *http.Request) {
 				fields[key] = fmt.Sprintf("%t", b)
 			}
 		default:
+			if !allowedConfigKeys[key] {
+				log.Printf("WARNING: Rejected unknown config key: %s", key)
+				continue
+			}
 			if s, ok := val.(string); ok {
 				fields[key] = s
 			}
@@ -67,19 +85,6 @@ func UpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	cfg, _ := config.GetMasked()
 	writeJSON(w, http.StatusOK, cfg)
-}
-
-func GetSecrets(w http.ResponseWriter, r *http.Request) {
-	cfg, err := config.Get()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get config"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"radarr_api_key": cfg.RadarrAPIKey,
-		"sonarr_api_key": cfg.SonarrAPIKey,
-		"tmdb_api_key":   cfg.TMDbAPIKey,
-	})
 }
 
 type ValidationResult struct {
@@ -109,8 +114,9 @@ func ValidateConfig(w http.ResponseWriter, r *http.Request) {
 			results = append(results, ValidationResult{
 				Service: "Radarr",
 				Status:  "error",
-				Message: fmt.Sprintf("Connection failed: %v", err),
+				Message: "Connection failed",
 			})
+			log.Printf("Radarr connection test failed: %v", err)
 		} else {
 			results = append(results, ValidationResult{
 				Service: "Radarr",
@@ -134,8 +140,9 @@ func ValidateConfig(w http.ResponseWriter, r *http.Request) {
 			results = append(results, ValidationResult{
 				Service: "Sonarr",
 				Status:  "error",
-				Message: fmt.Sprintf("Connection failed: %v", err),
+				Message: "Connection failed",
 			})
+			log.Printf("Sonarr connection test failed: %v", err)
 		} else {
 			results = append(results, ValidationResult{
 				Service: "Sonarr",
@@ -159,8 +166,9 @@ func ValidateConfig(w http.ResponseWriter, r *http.Request) {
 			results = append(results, ValidationResult{
 				Service: "TMDb",
 				Status:  "error",
-				Message: fmt.Sprintf("Connection failed: %v", err),
+				Message: "Connection failed",
 			})
+			log.Printf("TMDb connection test failed: %v", err)
 		} else {
 			results = append(results, ValidationResult{
 				Service: "TMDb",

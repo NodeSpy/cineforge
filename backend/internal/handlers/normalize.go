@@ -6,9 +6,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -20,6 +22,10 @@ import (
 	radarrClient "cineforge/internal/radarr"
 	sonarrClient "cineforge/internal/sonarr"
 )
+
+var activeSSEConnections atomic.Int32
+
+const maxSSEConnections = 20
 
 type NormalizeCandidate struct {
 	Title      string `json:"title"`
@@ -224,6 +230,54 @@ func splitCSV(s string) []string {
 	return parts
 }
 
+func getAllowedMediaRoots() []string {
+	cfg, err := config.Get()
+	if err != nil {
+		return nil
+	}
+	var roots []string
+	if cfg.RootFolderPath != "" {
+		roots = append(roots, filepath.Clean(cfg.RootFolderPath))
+	}
+	if cfg.SonarrURL != "" {
+		rows, err := db.DB.Query("SELECT value FROM config WHERE key='sonarr_root_folder_path'")
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var v string
+				if rows.Scan(&v) == nil && v != "" {
+					roots = append(roots, filepath.Clean(v))
+				}
+			}
+		}
+	}
+	mediaEnv := os.Getenv("MEDIA_ROOT")
+	if mediaEnv != "" {
+		for _, p := range strings.Split(mediaEnv, ":") {
+			if p != "" {
+				roots = append(roots, filepath.Clean(p))
+			}
+		}
+	}
+	if len(roots) == 0 {
+		roots = append(roots, "/media")
+	}
+	return roots
+}
+
+func isPathAllowed(filePath string, allowedRoots []string) bool {
+	cleaned := filepath.Clean(filePath)
+	if !filepath.IsAbs(cleaned) {
+		return false
+	}
+	for _, root := range allowedRoots {
+		if strings.HasPrefix(cleaned, root+"/") || cleaned == root {
+			return true
+		}
+	}
+	return false
+}
+
 func StartNormalize(w http.ResponseWriter, r *http.Request) {
 	var req NormalizeStartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -233,6 +287,20 @@ func StartNormalize(w http.ResponseWriter, r *http.Request) {
 	if len(req.Items) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "No items to normalize"})
 		return
+	}
+	if len(req.Items) > 10000 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Too many items (max 10000)"})
+		return
+	}
+
+	allowedRoots := getAllowedMediaRoots()
+	for _, item := range req.Items {
+		if !isPathAllowed(item.FilePath, allowedRoots) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("File path %q is not under an allowed media root", item.FilePath),
+			})
+			return
+		}
 	}
 	ncfg := normalize.DefaultConfig()
 	if req.Config != nil {
@@ -430,6 +498,9 @@ func StopNormalize(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
 	activeNormalizeJobsMu.Lock()
 	ch, ok := activeNormalizeJobs[jobID]
+	if ok {
+		delete(activeNormalizeJobs, jobID)
+	}
 	activeNormalizeJobsMu.Unlock()
 	if ok {
 		close(ch)
@@ -507,6 +578,13 @@ func RetryNormalize(w http.ResponseWriter, r *http.Request) {
 }
 
 func GetNormalizeStatus(w http.ResponseWriter, r *http.Request) {
+	if activeSSEConnections.Load() >= int32(maxSSEConnections) {
+		http.Error(w, `{"error":"too many SSE connections"}`, http.StatusTooManyRequests)
+		return
+	}
+	activeSSEConnections.Add(1)
+	defer activeSSEConnections.Add(-1)
+
 	jobID := chi.URLParam(r, "id")
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -653,10 +731,41 @@ func GetNormalizeConfigHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cfg)
 }
 
+var (
+	validHWAccel      = map[string]bool{"auto": true, "vaapi": true, "nvenc": true, "cpu": true}
+	validVideoMode    = map[string]bool{"copy": true, "reencode": true}
+	validMeasureMode  = map[string]bool{"auto": true, "full": true, "sample": true}
+	validAudioBitrate = map[string]bool{"128k": true, "192k": true, "256k": true, "320k": true}
+)
+
 func UpdateNormalizeConfig(w http.ResponseWriter, r *http.Request) {
 	var cfg config.NormalizeConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+		return
+	}
+	if cfg.TargetLUFS < -70.0 || cfg.TargetLUFS > -5.0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Target LUFS must be between -70.0 and -5.0"})
+		return
+	}
+	if !validHWAccel[cfg.HWAccel] {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid HW acceleration value"})
+		return
+	}
+	if !validAudioBitrate[cfg.AudioBitrate] {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid audio bitrate"})
+		return
+	}
+	if !validVideoMode[cfg.VideoMode] {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid video mode"})
+		return
+	}
+	if !validMeasureMode[cfg.MeasureMode] {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid measure mode"})
+		return
+	}
+	if cfg.Parallel < 1 || cfg.Parallel > 8 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Parallel must be between 1 and 8"})
 		return
 	}
 	fields := map[string]string{
@@ -689,4 +798,6 @@ func ClearNormalizeHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"cleared": true})
+}
+ true})
 }

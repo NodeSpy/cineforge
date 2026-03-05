@@ -1,12 +1,15 @@
 services:
   cineforge:
+    # image: ghcr.io/<owner>/cineforge:latest  # Uncomment to pull pre-built image instead of building
     build: .
     container_name: cineforge
     ports:
-      - "8085:8080"
+      - "8085:8080"  # Use "127.0.0.1:8085:8080" to restrict to localhost only
     environment:
-      - APP_SECRET=change-me-to-a-random-secret-string
       - PORT=8080
+      # - APP_SECRET=  # Auto-generated and persisted on first run if not set
+      # - PUID=1000
+      # - PGID=1000
     volumes:
       - app-data:/data
       # - /path/to/media:/media  # Mount your media library for normalization

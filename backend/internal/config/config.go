@@ -3,14 +3,18 @@ package config
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"cineforge/internal/db"
@@ -35,13 +39,63 @@ var sensitiveKeys = map[string]bool{
 	"tmdb_api_key":   true,
 }
 
+var insecureDefaults = map[string]bool{
+	"default-insecure-key-change-me":     true,
+	"change-me-to-a-random-secret-string": true,
+}
+
+var (
+	resolvedSecret     string
+	resolvedSecretOnce sync.Once
+)
+
+func resolveSecret() string {
+	resolvedSecretOnce.Do(func() {
+		secret := os.Getenv("APP_SECRET")
+
+		if secret != "" && !insecureDefaults[secret] {
+			resolvedSecret = secret
+			return
+		}
+
+		if secret != "" && insecureDefaults[secret] {
+			log.Println("WARNING: APP_SECRET is set to a known insecure default -- generating a secure secret instead")
+		}
+
+		dataDir := os.Getenv("DATA_DIR")
+		if dataDir == "" {
+			dataDir = "/data"
+		}
+		secretFile := filepath.Join(dataDir, ".app_secret")
+
+		if data, err := os.ReadFile(secretFile); err == nil {
+			s := strings.TrimSpace(string(data))
+			if len(s) >= 32 {
+				resolvedSecret = s
+				return
+			}
+		}
+
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			log.Fatalf("Failed to generate APP_SECRET: %v", err)
+		}
+		generated := hex.EncodeToString(b)
+		if err := os.WriteFile(secretFile, []byte(generated+"\n"), 0600); err != nil {
+			log.Printf("WARNING: Could not persist generated APP_SECRET to %s: %v", secretFile, err)
+		} else {
+			log.Printf("Generated and persisted APP_SECRET to %s", secretFile)
+		}
+		resolvedSecret = generated
+	})
+	return resolvedSecret
+}
+
+var pbkdf2Salt = []byte("cineforge-encryption-salt-v1")
+
 func getEncryptionKey() []byte {
-	secret := os.Getenv("APP_SECRET")
-	if secret == "" {
-		secret = "default-insecure-key-change-me"
-	}
-	hash := sha256.Sum256([]byte(secret))
-	return hash[:]
+	secret := resolveSecret()
+	return pbkdf2.Key([]byte(secret), pbkdf2Salt, 100_000, 32, sha256.New)
 }
 
 func encrypt(plaintext string) (string, error) {
@@ -113,6 +167,7 @@ func Get() (AppConfig, error) {
 		if encrypted == 1 {
 			decrypted, err := decrypt(value)
 			if err != nil {
+				log.Printf("WARNING: Failed to decrypt config key %q (APP_SECRET may have changed): %v", key, err)
 				continue
 			}
 			value = decrypted
@@ -255,7 +310,7 @@ func GetNormalizeConfig() NormalizeConfig {
 
 func maskSecret(s string) string {
 	if len(s) <= 4 {
-		return strings.Repeat("*", len(s))
+		return "****"
 	}
-	return s[:2] + strings.Repeat("*", len(s)-4) + s[len(s)-2:]
+	return "****" + s[len(s)-4:]
 }

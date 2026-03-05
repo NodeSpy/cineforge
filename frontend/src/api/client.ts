@@ -316,12 +316,6 @@ export async function updateConfig(config: Partial<AppConfig>): Promise<AppConfi
   return res.json();
 }
 
-export async function getSecrets(): Promise<{ radarr_api_key: string; sonarr_api_key: string; tmdb_api_key: string }> {
-  const res = await fetch(`${BASE}/config/secrets`);
-  if (!res.ok) throw new Error('Failed to fetch secrets');
-  return res.json();
-}
-
 export async function validateConfig(): Promise<ValidateConfigResponse> {
   const res = await fetch(`${BASE}/config/validate`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to validate config');

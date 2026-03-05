@@ -17,9 +17,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /cineforge .
 
 # Stage 3: Minimal runtime
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata ffmpeg
+RUN apk add --no-cache ca-certificates tzdata ffmpeg su-exec shadow
 WORKDIR /app
 COPY --from=backend-builder /cineforge .
-RUN mkdir -p /data
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh && mkdir -p /data
+
+LABEL org.opencontainers.image.description="Radarr/Sonarr companion utility for library browsing, bulk import, and audio normalization"
+LABEL org.opencontainers.image.licenses="MIT"
+
 EXPOSE 8080
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["./cineforge"]

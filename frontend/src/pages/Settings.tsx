@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from 'react';
 import {
   getConfig,
   updateConfig,
-  getSecrets,
   validateConfig,
   testRadarrConnection,
   testSonarrConnection,
@@ -33,7 +32,6 @@ export default function Settings() {
   const [showRadarrKey, setShowRadarrKey] = useState(false);
   const [showSonarrKey, setShowSonarrKey] = useState(false);
   const [showTmdbKey, setShowTmdbKey] = useState(false);
-  const [revealedSecrets, setRevealedSecrets] = useState<{ radarr_api_key?: string; sonarr_api_key?: string; tmdb_api_key?: string }>({});
   const dirtyFields = useRef<Set<keyof AppConfig>>(new Set());
 
   const defaultNormalize: NormalizeConfig = { target_lufs: -16.0, hwaccel: 'auto', audio_bitrate: '320k', backup: false, parallel: 1, video_mode: 'copy', measure_mode: 'auto' };
@@ -52,7 +50,6 @@ export default function Settings() {
       setConfig(cfg);
       setForm(cfg);
       dirtyFields.current.clear();
-      setRevealedSecrets({});
       setShowRadarrKey(false);
       setShowSonarrKey(false);
       setShowTmdbKey(false);
@@ -99,71 +96,16 @@ export default function Settings() {
     return payload as Partial<AppConfig>;
   }
 
-  async function fetchSecretsIfNeeded() {
-    if (revealedSecrets.radarr_api_key !== undefined) return revealedSecrets;
-    const secrets = await getSecrets();
-    setRevealedSecrets(secrets);
-    return secrets;
+  function toggleRevealRadarr() {
+    setShowRadarrKey(prev => !prev);
   }
 
-  async function toggleRevealRadarr() {
-    if (showRadarrKey) {
-      setShowRadarrKey(false);
-      if (!dirtyFields.current.has('radarr_api_key') && config) {
-        setForm(prev => ({ ...prev, radarr_api_key: config.radarr_api_key }));
-      }
-      return;
-    }
-    if (!dirtyFields.current.has('radarr_api_key')) {
-      try {
-        const secrets = await fetchSecretsIfNeeded();
-        setForm(prev => ({ ...prev, radarr_api_key: secrets.radarr_api_key }));
-      } catch {
-        setMessage({ type: 'error', text: 'Failed to fetch secret' });
-        return;
-      }
-    }
-    setShowRadarrKey(true);
+  function toggleRevealSonarr() {
+    setShowSonarrKey(prev => !prev);
   }
 
-  async function toggleRevealSonarr() {
-    if (showSonarrKey) {
-      setShowSonarrKey(false);
-      if (!dirtyFields.current.has('sonarr_api_key') && config) {
-        setForm(prev => ({ ...prev, sonarr_api_key: config.sonarr_api_key }));
-      }
-      return;
-    }
-    if (!dirtyFields.current.has('sonarr_api_key')) {
-      try {
-        const secrets = await fetchSecretsIfNeeded();
-        setForm(prev => ({ ...prev, sonarr_api_key: secrets.sonarr_api_key }));
-      } catch {
-        setMessage({ type: 'error', text: 'Failed to fetch secret' });
-        return;
-      }
-    }
-    setShowSonarrKey(true);
-  }
-
-  async function toggleRevealTmdb() {
-    if (showTmdbKey) {
-      setShowTmdbKey(false);
-      if (!dirtyFields.current.has('tmdb_api_key') && config) {
-        setForm(prev => ({ ...prev, tmdb_api_key: config.tmdb_api_key }));
-      }
-      return;
-    }
-    if (!dirtyFields.current.has('tmdb_api_key')) {
-      try {
-        const secrets = await fetchSecretsIfNeeded();
-        setForm(prev => ({ ...prev, tmdb_api_key: secrets.tmdb_api_key }));
-      } catch {
-        setMessage({ type: 'error', text: 'Failed to fetch secret' });
-        return;
-      }
-    }
-    setShowTmdbKey(true);
+  function toggleRevealTmdb() {
+    setShowTmdbKey(prev => !prev);
   }
 
   async function handleSave() {
@@ -197,7 +139,6 @@ export default function Settings() {
           setConfig(updated);
           setForm(updated);
           dirtyFields.current.clear();
-          setRevealedSecrets({});
           setShowRadarrKey(false);
           setShowSonarrKey(false);
           setShowTmdbKey(false);

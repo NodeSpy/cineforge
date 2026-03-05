@@ -23,13 +23,19 @@ func TestSonarrConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.SonarrURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Sonarr URL is required"})
+		return
+	}
+	if err := validateServiceURL(req.SonarrURL); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid URL"})
+		return
+	}
+
 	client := sonarrClient.NewClient(req.SonarrURL, req.SonarrAPIKey)
 	status, err := client.GetStatus()
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success": false,
-			"error":   err.Error(),
-		})
+		writeError(w, http.StatusOK, "Connection test failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
