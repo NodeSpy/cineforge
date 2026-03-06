@@ -48,12 +48,12 @@ func ConvertTitles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg, err := config.Get()
-	if err != nil || cfg.TMDbAPIKey == "" {
+	if err != nil || config.SecretForUse(cfg.TMDbAPIKey) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "TMDb API key not configured"})
 		return
 	}
 
-	client := tmdb.NewClient(cfg.TMDbAPIKey)
+	client := tmdb.NewClient(config.SecretForUse(cfg.TMDbAPIKey))
 	results := make([]ConvertMatch, 0, len(req.Items))
 	matched := 0
 
@@ -141,7 +141,7 @@ func ConvertTitlesStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg, err := config.Get()
-	if err != nil || cfg.TMDbAPIKey == "" {
+	if err != nil || config.SecretForUse(cfg.TMDbAPIKey) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "TMDb API key not configured"})
 		return
 	}
@@ -157,7 +157,7 @@ func ConvertTitlesStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	client := tmdb.NewClient(cfg.TMDbAPIKey)
+	client := tmdb.NewClient(config.SecretForUse(cfg.TMDbAPIKey))
 
 	client.OnThrottle = func(wait time.Duration, reason string) {
 		sendSSE(w, flusher, "throttle", map[string]interface{}{
@@ -259,7 +259,7 @@ func ResumeConvertStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg, err := config.Get()
-	if err != nil || cfg.TMDbAPIKey == "" {
+	if err != nil || config.SecretForUse(cfg.TMDbAPIKey) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "TMDb API key not configured"})
 		return
 	}
@@ -281,7 +281,7 @@ func ResumeConvertStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	client := tmdb.NewClient(cfg.TMDbAPIKey)
+	client := tmdb.NewClient(config.SecretForUse(cfg.TMDbAPIKey))
 	client.OnThrottle = func(wait time.Duration, reason string) {
 		sendSSE(w, flusher, "throttle", map[string]interface{}{
 			"wait_seconds": wait.Seconds(),

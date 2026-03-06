@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -65,7 +66,8 @@ type NormalizeJobResponse struct {
 
 type NormalizeJobDetailResponse struct {
 	NormalizeJobResponse
-	Items []NormalizeJobItem `json:"items"`
+	Items  []NormalizeJobItem        `json:"items"`
+	Config *normalize.NormalizeConfig `json:"config,omitempty"`
 }
 
 type NormalizeJobItem struct {
@@ -85,8 +87,11 @@ type PaginatedNormalizeJobsResponse struct {
 }
 
 var (
-	activeNormalizeJobs   = make(map[string]chan struct{})
+	activeNormalizeJobs   = make(map[string]context.CancelFunc)
 	activeNormalizeJobsMu sync.Mutex
+
+	activeFiles   = make(map[string]string) // file_path -> job_id
+	activeFilesMu sync.Mutex
 )
 
 func GetNormalizeCandidates(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +100,7 @@ func GetNormalizeCandidates(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to get config"})
 		return
 	}
-	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	client := radarrClient.NewClient(cfg.RadarrURL, config.SecretForUse(cfg.RadarrAPIKey))
 	movies, err := client.GetMovies()
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to fetch movies: " + err.Error()})
@@ -152,11 +157,11 @@ func GetNormalizeCandidates(w http.ResponseWriter, r *http.Request) {
 
 func GetSonarrNormalizeCandidates(w http.ResponseWriter, r *http.Request) {
 	cfg, err := config.Get()
-	if err != nil || cfg.SonarrURL == "" || cfg.SonarrAPIKey == "" {
+	if err != nil || cfg.SonarrURL == "" || config.SecretForUse(cfg.SonarrAPIKey) == "" {
 		writeJSON(w, http.StatusOK, []NormalizeCandidate{})
 		return
 	}
-	client := sonarrClient.NewClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+	client := sonarrClient.NewClient(cfg.SonarrURL, config.SecretForUse(cfg.SonarrAPIKey))
 	seriesList, err := client.GetSeries()
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to fetch series: " + err.Error()})
@@ -235,29 +240,37 @@ func getAllowedMediaRoots() []string {
 	if err != nil {
 		return nil
 	}
+	seen := make(map[string]bool)
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		path = filepath.Clean(path)
+		if !seen[path] {
+			seen[path] = true
+		}
+	}
 	var roots []string
 	if cfg.RootFolderPath != "" {
-		roots = append(roots, filepath.Clean(cfg.RootFolderPath))
+		add(cfg.RootFolderPath)
 	}
-	if cfg.SonarrURL != "" {
-		rows, err := db.DB.Query("SELECT value FROM config WHERE key='sonarr_root_folder_path'")
+	if cfg.SonarrURL != "" && config.SecretForUse(cfg.SonarrAPIKey) != "" {
+		client := sonarrClient.NewClient(cfg.SonarrURL, config.SecretForUse(cfg.SonarrAPIKey))
+		folders, err := client.GetRootFolders()
 		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var v string
-				if rows.Scan(&v) == nil && v != "" {
-					roots = append(roots, filepath.Clean(v))
-				}
+			for _, f := range folders {
+				add(f.Path)
 			}
 		}
 	}
 	mediaEnv := os.Getenv("MEDIA_ROOT")
 	if mediaEnv != "" {
 		for _, p := range strings.Split(mediaEnv, ":") {
-			if p != "" {
-				roots = append(roots, filepath.Clean(p))
-			}
+			add(strings.TrimSpace(p))
 		}
+	}
+	for path := range seen {
+		roots = append(roots, path)
 	}
 	if len(roots) == 0 {
 		roots = append(roots, "/media")
@@ -294,6 +307,8 @@ func StartNormalize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	allowedRoots := getAllowedMediaRoots()
+	seen := make(map[string]bool)
+	deduped := make([]NormalizeStartItem, 0, len(req.Items))
 	for _, item := range req.Items {
 		if !isPathAllowed(item.FilePath, allowedRoots) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
@@ -301,7 +316,15 @@ func StartNormalize(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		canonical := filepath.Clean(item.FilePath)
+		if seen[canonical] {
+			continue
+		}
+		seen[canonical] = true
+		item.FilePath = canonical
+		deduped = append(deduped, item)
 	}
+	req.Items = deduped
 	ncfg := normalize.DefaultConfig()
 	if req.Config != nil {
 		ncfg = *req.Config
@@ -326,15 +349,15 @@ func StartNormalize(w http.ResponseWriter, r *http.Request) {
 		db.DB.Exec(`INSERT INTO normalize_items (job_id, item_index, file_path, movie_title, radarr_movie_id, tmdb_id, status, target_lufs) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
 			jobID, i, item.FilePath, item.Title, item.RadarrID, item.TmdbID, itemLUFS)
 	}
-	stopCh := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	activeNormalizeJobsMu.Lock()
-	activeNormalizeJobs[jobID] = stopCh
+	activeNormalizeJobs[jobID] = cancel
 	activeNormalizeJobsMu.Unlock()
-	go runNormalizeJob(jobID, req.Items, ncfg, stopCh)
+	go runNormalizeJob(jobID, req.Items, ncfg, ctx)
 	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": jobID})
 }
 
-func runNormalizeJob(jobID string, items []NormalizeStartItem, cfg normalize.NormalizeConfig, stopCh chan struct{}) {
+func runNormalizeJob(jobID string, items []NormalizeStartItem, cfg normalize.NormalizeConfig, ctx context.Context) {
 	defer func() {
 		activeNormalizeJobsMu.Lock()
 		delete(activeNormalizeJobs, jobID)
@@ -351,6 +374,7 @@ func runNormalizeJob(jobID string, items []NormalizeStartItem, cfg normalize.Nor
 	if hwAccel == "auto" {
 		hwAccel = normalize.DetectHWAccel()
 	}
+	cfg.HWAccel = hwAccel // pass resolved value to engine so it does not re-detect per file
 	maxHW := 4
 	switch hwAccel {
 	case "nvenc":
@@ -371,7 +395,7 @@ func runNormalizeJob(jobID string, items []NormalizeStartItem, cfg normalize.Nor
 
 	for i, item := range items {
 		select {
-		case <-stopCh:
+		case <-ctx.Done():
 			mu.Lock()
 			cancelled = true
 			mu.Unlock()
@@ -402,34 +426,61 @@ func runNormalizeJob(jobID string, items []NormalizeStartItem, cfg normalize.Nor
 				}
 			}()
 
-			select {
-			case <-stopCh:
-				mu.Lock()
-				cancelled = true
-				mu.Unlock()
-				return
-			default:
-			}
+		select {
+		case <-ctx.Done():
+			mu.Lock()
+			cancelled = true
+			mu.Unlock()
+			return
+		default:
+		}
 
-			db.DB.Exec("UPDATE normalize_items SET status='measuring', updated_at=? WHERE job_id=? AND item_index=?",
-				time.Now().Format(time.RFC3339), jobID, idx)
-			dur, _ := normalize.GetDuration(it.FilePath)
-			db.DB.Exec("UPDATE normalize_items SET duration_secs=? WHERE job_id=? AND item_index=?", dur, jobID, idx)
+		canonicalPath := filepath.Clean(it.FilePath)
+		activeFilesMu.Lock()
+		if existingJob, busy := activeFiles[canonicalPath]; busy {
+			activeFilesMu.Unlock()
+			log.Printf("[normalize] skipping %s: already being processed by job %s", it.Title, existingJob)
+			db.DB.Exec("UPDATE normalize_items SET status='skipped', error=?, updated_at=? WHERE job_id=? AND item_index=?",
+				fmt.Sprintf("already being processed by job %s", existingJob), time.Now().Format(time.RFC3339), jobID, idx)
+			mu.Lock()
+			completed++
+			skipped++
+			mu.Unlock()
+			return
+		}
+		activeFiles[canonicalPath] = jobID
+		activeFilesMu.Unlock()
+		defer func() {
+			activeFilesMu.Lock()
+			delete(activeFiles, canonicalPath)
+			activeFilesMu.Unlock()
+		}()
 
-			// Build per-item config, respecting per-item LUFS override from DB
-			itemCfg := cfg
-			var itemTargetLUFS float64
-			err := db.DB.QueryRow("SELECT target_lufs FROM normalize_items WHERE job_id=? AND item_index=?", jobID, idx).Scan(&itemTargetLUFS)
-			if err == nil && itemTargetLUFS != 0 {
-				itemCfg.TargetLUFS = itemTargetLUFS
-			}
+		db.DB.Exec("UPDATE normalize_items SET status='measuring', updated_at=? WHERE job_id=? AND item_index=?",
+			time.Now().Format(time.RFC3339), jobID, idx)
 
-			onProgress := func(p normalize.FileProgress) {
+		probe := normalize.ProbeFile(it.FilePath, cfg.TargetLUFS)
+		dur := probe.Duration
+		db.DB.Exec("UPDATE normalize_items SET duration_secs=? WHERE job_id=? AND item_index=?", dur, jobID, idx)
+
+		itemCfg := cfg
+		var itemTargetLUFS float64
+		err := db.DB.QueryRow("SELECT target_lufs FROM normalize_items WHERE job_id=? AND item_index=?", jobID, idx).Scan(&itemTargetLUFS)
+		if err == nil && itemTargetLUFS != 0 {
+			itemCfg.TargetLUFS = itemTargetLUFS
+		}
+
+		var lastDBWrite time.Time
+		onProgress := func(p normalize.FileProgress) {
+			now := time.Now()
+			if now.Sub(lastDBWrite) >= 500*time.Millisecond || p.Phase != "normalizing" || p.Percent >= 100 {
 				db.DB.Exec("UPDATE normalize_items SET status=?, progress_pct=?, updated_at=? WHERE job_id=? AND item_index=?",
-					p.Phase, p.Percent, time.Now().Format(time.RFC3339), jobID, idx)
+					p.Phase, p.Percent, now.Format(time.RFC3339), jobID, idx)
+				lastDBWrite = now
 			}
+		}
 
-			result := normalize.NormalizeFile(it.FilePath, itemCfg, dur, onProgress, nil)
+		result := normalize.NormalizeFile(ctx, it.FilePath, itemCfg, dur, onProgress, nil)
 
 			mu.Lock()
 			completed++
@@ -438,7 +489,7 @@ func runNormalizeJob(jobID string, items []NormalizeStartItem, cfg normalize.Nor
 				succeeded++
 			case "failed":
 				failed++
-			case "skipped":
+			case "skipped", "cancelled":
 				skipped++
 			}
 			mu.Unlock()
@@ -457,15 +508,21 @@ func runNormalizeJob(jobID string, items []NormalizeStartItem, cfg normalize.Nor
 			case "skipped":
 				db.DB.Exec("UPDATE normalize_items SET status='skipped', error=?, updated_at=? WHERE job_id=? AND item_index=?",
 					result.Error, time.Now().Format(time.RFC3339), jobID, idx)
+			case "cancelled":
+				db.DB.Exec("UPDATE normalize_items SET status='cancelled', error='stopped by user', updated_at=? WHERE job_id=? AND item_index=?",
+					time.Now().Format(time.RFC3339), jobID, idx)
 			}
 
-			mu.Lock()
+		mu.Lock()
+		shouldFlush := completed%5 == 0 || completed >= len(items)
+		if shouldFlush {
 			db.DB.Exec("UPDATE normalize_jobs SET completed=?, succeeded=?, failed=?, skipped=?, updated_at=? WHERE id=?",
 				completed, succeeded, failed, skipped, time.Now().Format(time.RFC3339), jobID)
-			mu.Unlock()
+		}
+		mu.Unlock()
 
-			log.Printf("[normalize] %s: %s (%s)", it.Title, result.Status, it.FilePath)
-		}(i, item)
+		log.Printf("[normalize] %s: %s (%s)", it.Title, result.Status, it.FilePath)
+	}(i, item)
 	}
 
 	wg.Wait()
@@ -497,13 +554,13 @@ func runNormalizeJob(jobID string, items []NormalizeStartItem, cfg normalize.Nor
 func StopNormalize(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
 	activeNormalizeJobsMu.Lock()
-	ch, ok := activeNormalizeJobs[jobID]
+	cancel, ok := activeNormalizeJobs[jobID]
 	if ok {
 		delete(activeNormalizeJobs, jobID)
 	}
 	activeNormalizeJobsMu.Unlock()
 	if ok {
-		close(ch)
+		cancel()
 		writeJSON(w, http.StatusOK, map[string]string{"status": "stopping"})
 	} else {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Job not found or not running"})
@@ -518,7 +575,7 @@ func RetryNormalize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := db.DB.Query(
-		"SELECT file_path, movie_title, radarr_movie_id, tmdb_id FROM normalize_items WHERE job_id=? AND status='failed' ORDER BY item_index",
+		"SELECT file_path, movie_title, radarr_movie_id, tmdb_id, target_lufs FROM normalize_items WHERE job_id=? AND status='failed' ORDER BY item_index",
 		origJobID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to query failed items"})
@@ -527,10 +584,13 @@ func RetryNormalize(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	var items []NormalizeStartItem
+	var itemLUFSValues []float64
 	for rows.Next() {
 		var it NormalizeStartItem
-		rows.Scan(&it.FilePath, &it.Title, &it.RadarrID, &it.TmdbID)
+		var tlufs float64
+		rows.Scan(&it.FilePath, &it.Title, &it.RadarrID, &it.TmdbID, &tlufs)
 		items = append(items, it)
+		itemLUFSValues = append(itemLUFSValues, tlufs)
 	}
 	if len(items) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "No failed items to retry"})
@@ -555,15 +615,19 @@ func RetryNormalize(w http.ResponseWriter, r *http.Request) {
 	db.DB.Exec(`INSERT INTO normalize_jobs (id, status, total, config_snapshot, created_at, updated_at) VALUES (?, 'pending', ?, ?, ?, ?)`,
 		jobID, len(items), string(cfgOut), now, now)
 	for i, item := range items {
+		tlufs := ncfg.TargetLUFS
+		if i < len(itemLUFSValues) && itemLUFSValues[i] != 0 {
+			tlufs = itemLUFSValues[i]
+		}
 		db.DB.Exec(`INSERT INTO normalize_items (job_id, item_index, file_path, movie_title, radarr_movie_id, tmdb_id, status, target_lufs) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
-			jobID, i, item.FilePath, item.Title, item.RadarrID, item.TmdbID, ncfg.TargetLUFS)
+			jobID, i, item.FilePath, item.Title, item.RadarrID, item.TmdbID, tlufs)
 	}
 
-	stopCh := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	activeNormalizeJobsMu.Lock()
-	activeNormalizeJobs[jobID] = stopCh
+	activeNormalizeJobs[jobID] = cancel
 	activeNormalizeJobsMu.Unlock()
-	go runNormalizeJob(jobID, items, ncfg, stopCh)
+	go runNormalizeJob(jobID, items, ncfg, ctx)
 
 	// Mark original failed items as retried so they can't be retried again
 	db.DB.Exec("UPDATE normalize_items SET status='retried', error=?, updated_at=? WHERE job_id=? AND status='failed'",
@@ -595,6 +659,19 @@ func GetNormalizeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	var configSent bool
+	type itemStatus struct {
+		FilePath    string   `json:"file_path"`
+		Title       string   `json:"title"`
+		Status      string   `json:"status"`
+		LUFS        *float64 `json:"measured_lufs,omitempty"`
+		TargetLUFS  *float64 `json:"target_lufs,omitempty"`
+		Error       string   `json:"error,omitempty"`
+		ProgressPct float64  `json:"progress_pct"`
+	}
+	var prevItems []itemStatus
+	fullSendInterval := 0
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -603,32 +680,33 @@ func GetNormalizeStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		var status string
 		var total, completed, succeeded, failed, skipped int
+		var configSnapshot string
 		err := db.DB.QueryRow(
-			"SELECT status, total, completed, succeeded, failed, skipped FROM normalize_jobs WHERE id=?", jobID,
-		).Scan(&status, &total, &completed, &succeeded, &failed, &skipped)
+			"SELECT status, total, completed, succeeded, failed, skipped, config_snapshot FROM normalize_jobs WHERE id=?", jobID,
+		).Scan(&status, &total, &completed, &succeeded, &failed, &skipped, &configSnapshot)
 		if err != nil {
 			fmt.Fprintf(w, "event: error\ndata: {\"error\":\"job not found\"}\n\n")
 			flusher.Flush()
 			return
 		}
-		data, _ := json.Marshal(map[string]interface{}{
+		payload := map[string]interface{}{
 			"status": status, "total": total, "completed": completed,
 			"succeeded": succeeded, "failed": failed, "skipped": skipped,
-		})
+		}
+		if !configSent && configSnapshot != "" {
+			var cfg normalize.NormalizeConfig
+			if json.Unmarshal([]byte(configSnapshot), &cfg) == nil {
+				payload["config"] = &cfg
+				configSent = true
+			}
+		}
+		data, _ := json.Marshal(payload)
 		fmt.Fprintf(w, "event: progress\ndata: %s\n\n", data)
+
 		itemRows, _ := db.DB.Query(
 			"SELECT file_path, movie_title, status, measured_lufs, error, progress_pct, target_lufs FROM normalize_items WHERE job_id=? ORDER BY item_index", jobID)
 		if itemRows != nil {
-			type itemStatus struct {
-				FilePath    string   `json:"file_path"`
-				Title       string   `json:"title"`
-				Status      string   `json:"status"`
-				LUFS        *float64 `json:"measured_lufs,omitempty"`
-				TargetLUFS  *float64 `json:"target_lufs,omitempty"`
-				Error       string   `json:"error,omitempty"`
-				ProgressPct float64  `json:"progress_pct"`
-			}
-			var items []itemStatus
+			var currentItems []itemStatus
 			for itemRows.Next() {
 				var is itemStatus
 				var lufs, targetLufs *float64
@@ -637,11 +715,29 @@ func GetNormalizeStatus(w http.ResponseWriter, r *http.Request) {
 				is.LUFS = lufs
 				is.TargetLUFS = targetLufs
 				is.Error = errStr
-				items = append(items, is)
+				currentItems = append(currentItems, is)
 			}
 			itemRows.Close()
-			idata, _ := json.Marshal(items)
-			fmt.Fprintf(w, "event: items\ndata: %s\n\n", idata)
+
+			sendFull := len(prevItems) != len(currentItems) || fullSendInterval >= 5
+			if !sendFull {
+				var changed []itemStatus
+				for i, cur := range currentItems {
+					if i >= len(prevItems) || cur.Status != prevItems[i].Status || cur.ProgressPct != prevItems[i].ProgressPct || cur.Error != prevItems[i].Error {
+						changed = append(changed, cur)
+					}
+				}
+				if len(changed) > 0 {
+					idata, _ := json.Marshal(changed)
+					fmt.Fprintf(w, "event: items_delta\ndata: %s\n\n", idata)
+				}
+				fullSendInterval++
+			} else {
+				idata, _ := json.Marshal(currentItems)
+				fmt.Fprintf(w, "event: items\ndata: %s\n\n", idata)
+				fullSendInterval = 0
+			}
+			prevItems = currentItems
 		}
 		flusher.Flush()
 		if status == "completed" || status == "failed" || status == "cancelled" {
@@ -694,15 +790,22 @@ func GetNormalizeJobs(w http.ResponseWriter, r *http.Request) {
 func GetNormalizeJob(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
 	var j NormalizeJobResponse
+	var configSnapshot string
 	err := db.DB.QueryRow(
-		"SELECT id, status, total, completed, succeeded, failed, skipped, created_at, updated_at FROM normalize_jobs WHERE id=?", jobID,
-	).Scan(&j.ID, &j.Status, &j.Total, &j.Completed, &j.Succeeded, &j.Failed, &j.Skipped, &j.CreatedAt, &j.UpdatedAt)
+		"SELECT id, status, total, completed, succeeded, failed, skipped, created_at, updated_at, config_snapshot FROM normalize_jobs WHERE id=?", jobID,
+	).Scan(&j.ID, &j.Status, &j.Total, &j.Completed, &j.Succeeded, &j.Failed, &j.Skipped, &j.CreatedAt, &j.UpdatedAt, &configSnapshot)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Job not found"})
 		return
 	}
 
 	detail := NormalizeJobDetailResponse{NormalizeJobResponse: j}
+	if configSnapshot != "" {
+		var cfg normalize.NormalizeConfig
+		if json.Unmarshal([]byte(configSnapshot), &cfg) == nil {
+			detail.Config = &cfg
+		}
+	}
 	rows, err := db.DB.Query(
 		"SELECT file_path, movie_title, status, measured_lufs, target_lufs, error FROM normalize_items WHERE job_id=? ORDER BY item_index", jobID)
 	if err == nil {
@@ -726,6 +829,70 @@ func GetNormalizeJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
+func GetPendingCandidates(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "id")
+	var exists int
+	err := db.DB.QueryRow("SELECT 1 FROM normalize_jobs WHERE id=?", jobID).Scan(&exists)
+	if err != nil || exists != 1 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Job not found"})
+		return
+	}
+	rows, err := db.DB.Query(
+		"SELECT file_path, movie_title, radarr_movie_id, tmdb_id FROM normalize_items WHERE job_id=? AND status='pending' ORDER BY item_index", jobID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to query pending items"})
+		return
+	}
+	defer rows.Close()
+	var candidates []NormalizeCandidate
+	for rows.Next() {
+		var filePath, movieTitle string
+		var radarrID, tmdbID int
+		if err := rows.Scan(&filePath, &movieTitle, &radarrID, &tmdbID); err != nil {
+			continue
+		}
+		candidates = append(candidates, NormalizeCandidate{
+			Title:      movieTitle,
+			Year:       0,
+			TmdbID:     tmdbID,
+			RadarrID:   radarrID,
+			FilePath:   filePath,
+			FileSize:   0,
+			PosterURL:  "",
+			Normalized: false,
+		})
+	}
+	if candidates == nil {
+		candidates = []NormalizeCandidate{}
+	}
+	writeJSON(w, http.StatusOK, candidates)
+}
+
+func GetHWAccelStatus(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("refresh") == "true" {
+		normalize.ResetDetection()
+	}
+	status := normalize.DetectAllHWAccel()
+	writeJSON(w, http.StatusOK, status)
+}
+
+func TestHWAccel(w http.ResponseWriter, r *http.Request) {
+	method := r.URL.Query().Get("method")
+	if method == "" {
+		method = "auto"
+	}
+	ok, msg := normalize.TestHWAccelMethod(method)
+	if ok {
+		resolved := method
+		if method == "auto" {
+			resolved = normalize.DetectHWAccel()
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "method": resolved, "message": msg})
+	} else {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": false, "error": msg})
+	}
+}
+
 func GetNormalizeConfigHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := config.GetNormalizeConfig()
 	writeJSON(w, http.StatusOK, cfg)
@@ -743,6 +910,27 @@ func UpdateNormalizeConfig(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
 		return
+	}
+	// Apply defaults for omitted or zero values so partial payloads still validate
+	if cfg.MeasureMode == "" {
+		cfg.MeasureMode = "auto"
+	}
+	if cfg.HWAccel == "" {
+		cfg.HWAccel = "auto"
+	}
+	if cfg.VideoMode == "" {
+		cfg.VideoMode = "copy"
+	}
+	if cfg.AudioBitrate == "" {
+		cfg.AudioBitrate = "320k"
+	}
+	if cfg.Parallel < 1 {
+		cfg.Parallel = 1
+	} else if cfg.Parallel > 8 {
+		cfg.Parallel = 8
+	}
+	if cfg.TargetLUFS == 0 {
+		cfg.TargetLUFS = -16.0
 	}
 	if cfg.TargetLUFS < -70.0 || cfg.TargetLUFS > -5.0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Target LUFS must be between -70.0 and -5.0"})

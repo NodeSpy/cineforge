@@ -22,11 +22,11 @@ func TestTMDbConnection(w http.ResponseWriter, r *http.Request) {
 
 	if isMasked(req.APIKey) {
 		cfg, err := config.Get()
-		if err != nil || cfg.TMDbAPIKey == "" {
+		if err != nil || config.SecretForUse(cfg.TMDbAPIKey) == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "No stored TMDb API key found"})
 			return
 		}
-		req.APIKey = cfg.TMDbAPIKey
+		req.APIKey = config.SecretForUse(cfg.TMDbAPIKey)
 	}
 
 	if req.APIKey == "" {

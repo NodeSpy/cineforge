@@ -91,9 +91,11 @@ export default function Settings() {
     if (dirtyFields.current.size === 0) return null;
     const payload: Record<string, unknown> = {};
     for (const key of dirtyFields.current) {
-      payload[key] = form[key];
+      const val = form[key];
+      if ((key === 'radarr_api_key' || key === 'sonarr_api_key' || key === 'tmdb_api_key') && (val == null || (typeof val === 'string' && (val === '' || val.includes('****'))))) continue;
+      payload[key] = val;
     }
-    return payload as Partial<AppConfig>;
+    return Object.keys(payload).length ? (payload as Partial<AppConfig>) : null;
   }
 
   function toggleRevealRadarr() {

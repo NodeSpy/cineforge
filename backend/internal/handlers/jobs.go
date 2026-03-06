@@ -71,7 +71,7 @@ func ReconcileJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	client := radarrClient.NewClient(cfg.RadarrURL, config.SecretForUse(cfg.RadarrAPIKey))
 	movies, err := client.GetMovies()
 	if err != nil {
 		log.Printf("[reconcile] Failed to fetch Radarr movies: %v", err)

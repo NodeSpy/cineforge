@@ -15,7 +15,7 @@ func GetRadarrStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	client := radarrClient.NewClient(cfg.RadarrURL, config.SecretForUse(cfg.RadarrAPIKey))
 	status, err := client.GetStatus()
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "Failed to connect to Radarr", err)
@@ -39,11 +39,11 @@ func TestRadarrConnection(w http.ResponseWriter, r *http.Request) {
 
 	if isMasked(req.RadarrAPIKey) {
 		cfg, err := config.Get()
-		if err != nil || cfg.RadarrAPIKey == "" {
+		if err != nil || config.SecretForUse(cfg.RadarrAPIKey) == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "No stored Radarr API key found"})
 			return
 		}
-		req.RadarrAPIKey = cfg.RadarrAPIKey
+		req.RadarrAPIKey = config.SecretForUse(cfg.RadarrAPIKey)
 	}
 
 	if req.RadarrURL == "" {
@@ -76,7 +76,7 @@ func GetQualityProfiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	client := radarrClient.NewClient(cfg.RadarrURL, config.SecretForUse(cfg.RadarrAPIKey))
 	profiles, err := client.GetQualityProfiles()
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "Failed to fetch quality profiles", err)
@@ -93,7 +93,7 @@ func GetRootFolders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	client := radarrClient.NewClient(cfg.RadarrURL, config.SecretForUse(cfg.RadarrAPIKey))
 	folders, err := client.GetRootFolders()
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "Failed to fetch root folders", err)
@@ -110,7 +110,7 @@ func GetTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	client := radarrClient.NewClient(cfg.RadarrURL, config.SecretForUse(cfg.RadarrAPIKey))
 	tags, err := client.GetTags()
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "Failed to fetch tags", err)
@@ -137,7 +137,7 @@ func CreateTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	client := radarrClient.NewClient(cfg.RadarrURL, config.SecretForUse(cfg.RadarrAPIKey))
 	tag, err := client.CreateTag(req.Label)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "Failed to create tag", err)

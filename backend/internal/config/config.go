@@ -33,6 +33,10 @@ type AppConfig struct {
 	Monitored        bool   `json:"monitored"`
 }
 
+// sentinelValue is stored in the config map when decryption fails (e.g. APP_SECRET changed).
+// GetMasked() shows it as "****" so the UI indicates a value exists; re-enter key to replace.
+const sentinelValue = "\x01"
+
 var sensitiveKeys = map[string]bool{
 	"radarr_api_key": true,
 	"sonarr_api_key": true,
@@ -82,10 +86,14 @@ func resolveSecret() string {
 		}
 		generated := hex.EncodeToString(b)
 		if err := os.WriteFile(secretFile, []byte(generated+"\n"), 0600); err != nil {
-			log.Printf("WARNING: Could not persist generated APP_SECRET to %s: %v", secretFile, err)
-		} else {
-			log.Printf("Generated and persisted APP_SECRET to %s", secretFile)
+			log.Fatalf("Cannot persist APP_SECRET to %s (fix /data mount or set APP_SECRET): %v", secretFile, err)
 		}
+		// Sync so secret survives container stop/reboot (e.g. Docker stop)
+		if f, err := os.OpenFile(secretFile, os.O_RDONLY, 0); err == nil {
+			_ = f.Sync()
+			_ = f.Close()
+		}
+		log.Printf("Generated and persisted APP_SECRET to %s", secretFile)
 		resolvedSecret = generated
 	})
 	return resolvedSecret
@@ -172,6 +180,7 @@ func Get() (AppConfig, error) {
 			decrypted, err := decrypt(value)
 			if err != nil {
 				log.Printf("WARNING: Failed to decrypt config key %q (APP_SECRET may have changed): %v", key, err)
+				values[key] = sentinelValue // so GetMasked() shows "****" instead of empty
 				continue
 			}
 			value = decrypted
@@ -212,6 +221,11 @@ func Get() (AppConfig, error) {
 
 func SetFields(fields map[string]string) error {
 	for key, value := range fields {
+		// Never overwrite a stored secret with empty (preserves keys across partial updates)
+		if sensitiveKeys[key] && (value == "" || value == sentinelValue) {
+			continue
+		}
+
 		isEncrypted := 0
 		storeValue := value
 
@@ -243,14 +257,20 @@ func GetMasked() (AppConfig, error) {
 		return cfg, err
 	}
 
-	if cfg.RadarrAPIKey != "" {
+	if cfg.RadarrAPIKey != "" && cfg.RadarrAPIKey != sentinelValue {
 		cfg.RadarrAPIKey = maskSecret(cfg.RadarrAPIKey)
+	} else if cfg.RadarrAPIKey == sentinelValue {
+		cfg.RadarrAPIKey = "****"
 	}
-	if cfg.SonarrAPIKey != "" {
+	if cfg.SonarrAPIKey != "" && cfg.SonarrAPIKey != sentinelValue {
 		cfg.SonarrAPIKey = maskSecret(cfg.SonarrAPIKey)
+	} else if cfg.SonarrAPIKey == sentinelValue {
+		cfg.SonarrAPIKey = "****"
 	}
-	if cfg.TMDbAPIKey != "" {
+	if cfg.TMDbAPIKey != "" && cfg.TMDbAPIKey != sentinelValue {
 		cfg.TMDbAPIKey = maskSecret(cfg.TMDbAPIKey)
+	} else if cfg.TMDbAPIKey == sentinelValue {
+		cfg.TMDbAPIKey = "****"
 	}
 
 	return cfg, nil
@@ -272,7 +292,7 @@ func GetNormalizeConfig() NormalizeConfig {
 		HWAccel:      "auto",
 		AudioBitrate: "320k",
 		Backup:       false,
-		Parallel:     1,
+		Parallel:     2,
 		VideoMode:    "copy",
 		MeasureMode:  "auto",
 	}
@@ -317,4 +337,12 @@ func maskSecret(s string) string {
 		return "****"
 	}
 	return "****" + s[len(s)-4:]
+}
+
+// SecretForUse returns the secret value for use in API calls. Returns "" if the value is empty or stored but failed to decrypt (sentinel).
+func SecretForUse(s string) string {
+	if s == "" || s == sentinelValue {
+		return ""
+	}
+	return s
 }

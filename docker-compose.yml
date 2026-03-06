@@ -11,11 +11,7 @@ services:
       # - PUID=1000
       # - PGID=1000
     volumes:
-      - app-data:/data
+      # Bind mount: data lives on host at /var/lib/cineforge (entrypoint chowns to PUID/PGID)
+      - /var/lib/cineforge:/data
       # - /path/to/media:/media  # Mount your media library for normalization
     restart: unless-stopped
-
-
-volumes:
-  app-data:
-    name: cineforge-data

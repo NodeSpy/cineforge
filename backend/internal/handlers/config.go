@@ -106,9 +106,9 @@ func ValidateConfig(w http.ResponseWriter, r *http.Request) {
 
 	var results []ValidationResult
 
-	// Test Radarr
-	if cfg.RadarrURL != "" && cfg.RadarrAPIKey != "" {
-		client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	// Test Radarr (SecretForUse returns "" when key is stored but failed to decrypt)
+	if cfg.RadarrURL != "" && config.SecretForUse(cfg.RadarrAPIKey) != "" {
+		client := radarrClient.NewClient(cfg.RadarrURL, config.SecretForUse(cfg.RadarrAPIKey))
 		status, err := client.GetStatus()
 		if err != nil {
 			results = append(results, ValidationResult{
@@ -133,8 +133,8 @@ func ValidateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Test Sonarr
-	if cfg.SonarrURL != "" && cfg.SonarrAPIKey != "" {
-		client := sonarrClient.NewClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+	if cfg.SonarrURL != "" && config.SecretForUse(cfg.SonarrAPIKey) != "" {
+		client := sonarrClient.NewClient(cfg.SonarrURL, config.SecretForUse(cfg.SonarrAPIKey))
 		status, err := client.GetStatus()
 		if err != nil {
 			results = append(results, ValidationResult{
@@ -159,8 +159,8 @@ func ValidateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Test TMDb
-	if cfg.TMDbAPIKey != "" {
-		client := tmdb.NewClient(cfg.TMDbAPIKey)
+	if config.SecretForUse(cfg.TMDbAPIKey) != "" {
+		client := tmdb.NewClient(config.SecretForUse(cfg.TMDbAPIKey))
 		_, err := client.SearchMovie("test", "")
 		if err != nil {
 			results = append(results, ValidationResult{

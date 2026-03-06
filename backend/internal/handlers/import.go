@@ -54,7 +54,7 @@ func PreviewImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	client := radarrClient.NewClient(cfg.RadarrURL, config.SecretForUse(cfg.RadarrAPIKey))
 
 	existingMovies, _ := client.GetMovies()
 	existingTmdbIDs := make(map[int]bool)
@@ -176,7 +176,7 @@ func ImportMovies(w http.ResponseWriter, r *http.Request) {
 
 func runImport(job *jobs.Job, cfg config.AppConfig, items []ImportItem, sessionID string, tags []int) {
 	job.Start()
-	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	client := radarrClient.NewClient(cfg.RadarrURL, config.SecretForUse(cfg.RadarrAPIKey))
 
 	existingTmdbIDs := make(map[int]bool)
 	existingImdbIDs := make(map[string]bool)

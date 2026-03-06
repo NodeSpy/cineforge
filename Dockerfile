@@ -17,7 +17,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /cineforge .
 
 # Stage 3: Minimal runtime
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata ffmpeg su-exec shadow
+RUN apk add --no-cache ca-certificates tzdata ffmpeg su-exec shadow \
+    mesa-va-gallium libva-intel-driver intel-media-driver libva-utils
 WORKDIR /app
 COPY --from=backend-builder /cineforge .
 COPY entrypoint.sh .

@@ -2,12 +2,33 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   getNormalizeCandidates, getSonarrNormalizeCandidates, getLibrary,
-  startNormalize, stopNormalize,
-  subscribeNormalizeStatus, getNormalizeConfig, updateNormalizeConfig,
-  getNormalizeJobs, getNormalizeJob, retryNormalize,
+  startNormalize, stopNormalize, retryNormalize,
+  subscribeNormalizeStatus, getNormalizeConfig, updateNormalizeConfig, getHWAccelStatus,
+  getNormalizeJobs, getNormalizeJob, getPendingCandidatesFromJob,
+  testHWAccel, TestHWAccelResult,
   NormalizeCandidate, NormalizeConfig, NormalizeStatusEvent, NormalizeItemStatus,
-  NormalizeJob, NormalizeJobItem,
+  NormalizeJob, NormalizeJobItem, NormalizeJobDetail, HWAccelStatus, PaginatedNormalizeJobs,
 } from '../api/client';
+
+function HwAccelBadge({ hwaccel, videoMode }: { hwaccel: string; videoMode?: string }) {
+  const label = hwaccel === 'auto' ? 'Auto' : hwaccel.toUpperCase();
+  const copySuffix = videoMode === 'copy' ? ' (copy)' : '';
+  const isHW = hwaccel === 'vaapi' || hwaccel === 'nvenc';
+  const title = videoMode === 'copy'
+    ? (isHW ? 'GPU detected; video is stream-copied, not re-encoded' : 'Software (CPU); video stream-copied')
+    : (isHW ? 'Hardware acceleration in use' : 'Software (CPU) encoding');
+  return (
+    <span
+      className={'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium ' + (isHW ? 'bg-teal-500/20 text-teal-400' : 'bg-dark-600 text-dark-400')}
+      title={title}
+    >
+      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+      </svg>
+      {label}{copySuffix}
+    </span>
+  );
+}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -37,7 +58,10 @@ export default function Normalize() {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const [config, setConfig] = useState<NormalizeConfig>({ target_lufs: -16.0, hwaccel: 'auto', audio_bitrate: '320k', backup: false, parallel: 1, video_mode: 'copy', measure_mode: 'auto' });
+  const [config, setConfig] = useState<NormalizeConfig>({ target_lufs: -16.0, hwaccel: 'auto', audio_bitrate: '320k', backup: false, parallel: 2, video_mode: 'copy', measure_mode: 'auto' });
+  const [hwStatus, setHwStatus] = useState<HWAccelStatus | null>(null);
+  const [hwTestResult, setHwTestResult] = useState<TestHWAccelResult | null>(null);
+  const [hwTestLoading, setHwTestLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [customLufs, setCustomLufs] = useState(false);
@@ -47,7 +71,10 @@ export default function Normalize() {
   const [jobId, setJobId] = useState('');
   const [progress, setProgress] = useState<NormalizeStatusEvent | null>(null);
   const [items, setItems] = useState<NormalizeItemStatus[]>([]);
+  const [jobConfig, setJobConfig] = useState<NormalizeConfig | null>(null);
+  const [stopping, setStopping] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+  const stopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     getNormalizeConfig().then(cfg => {
@@ -57,25 +84,55 @@ export default function Normalize() {
     }).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (showAdvanced) {
+      getHWAccelStatus().then(setHwStatus).catch(() => setHwStatus(null));
+    }
+  }, [showAdvanced]);
+
   const connectToJob = useCallback((id: string) => {
     setJobId(id);
     setPhase('running');
     setProgress(null);
     setItems([]);
+    setJobConfig(null);
+    setStopping(false);
+    if (stopTimeoutRef.current) {
+      clearTimeout(stopTimeoutRef.current);
+      stopTimeoutRef.current = null;
+    }
     esRef.current?.close();
     const es = subscribeNormalizeStatus(
       id,
-      (data) => setProgress(data),
+      (data) => {
+        setProgress(data);
+        if (data.config) setJobConfig(data.config);
+      },
       (itemData) => setItems(itemData),
-      () => { setPhase('results'); },
-      (err) => { setError(err); setPhase('results'); },
+      () => {
+        if (stopTimeoutRef.current) {
+          clearTimeout(stopTimeoutRef.current);
+          stopTimeoutRef.current = null;
+        }
+        setPhase('results');
+        setStopping(false);
+      },
+      (err) => {
+        if (stopTimeoutRef.current) {
+          clearTimeout(stopTimeoutRef.current);
+          stopTimeoutRef.current = null;
+        }
+        setError(err);
+        setPhase('results');
+        setStopping(false);
+      },
     );
     esRef.current = es;
   }, []);
 
   useEffect(() => {
-    getNormalizeJobs(1, 5).then(data => {
-      const running = data.jobs.find(j => j.status === 'running');
+    getNormalizeJobs(1, 5).then((data: PaginatedNormalizeJobs) => {
+      const running = data.jobs.find((j: NormalizeJob) => j.status === 'running');
       if (running) {
         connectToJob(running.id);
       }
@@ -159,8 +216,8 @@ export default function Normalize() {
       };
     });
     if (startItems.length === 0) return;
+    updateNormalizeConfig(config).catch(() => { /* persist best-effort; don't block start */ });
     try {
-      await updateNormalizeConfig(config);
       const { job_id } = await startNormalize(startItems, config);
       connectToJob(job_id);
     } catch (err: unknown) {
@@ -169,15 +226,48 @@ export default function Normalize() {
   }, [currentList, selected, config, connectToJob, lufsOverrides]);
 
   const handleStop = async () => {
-    if (jobId) {
+    if (!jobId) return;
+    setStopping(true);
+    try {
       await stopNormalize(jobId);
-      esRef.current?.close();
+    } catch {
+      setStopping(false);
+      return;
     }
+    stopTimeoutRef.current = setTimeout(() => {
+      stopTimeoutRef.current = null;
+      esRef.current?.close();
+      esRef.current = null;
+      getNormalizeJob(jobId).then((job: NormalizeJobDetail) => {
+        setProgress({
+          status: job.status,
+          total: job.total,
+          completed: job.completed,
+          succeeded: job.succeeded,
+          failed: job.failed,
+          skipped: job.skipped,
+        });
+        setItems(job.items ?? []);
+        if (job.config) setJobConfig(job.config);
+      }).catch(() => {});
+      setPhase('results');
+      setStopping(false);
+    }, 10000);
   };
 
   const handleSaveSettings = async () => {
+    const full: NormalizeConfig = {
+      target_lufs: config.target_lufs && config.target_lufs !== 0 ? config.target_lufs : -16,
+      hwaccel: config.hwaccel || 'auto',
+      audio_bitrate: config.audio_bitrate || '320k',
+      backup: config.backup ?? false,
+      parallel: Math.min(8, Math.max(1, config.parallel || 1)),
+      video_mode: config.video_mode || 'copy',
+      measure_mode: config.measure_mode || 'auto',
+    };
     try {
-      await updateNormalizeConfig(config);
+      await updateNormalizeConfig(full);
+      setError('');
       setSettingsSaved(true);
       setTimeout(() => setSettingsSaved(false), 2000);
     } catch {
@@ -190,9 +280,20 @@ export default function Normalize() {
     return (
       <>
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold text-gray-100">Normalizing Audio</h2>
-          <button onClick={handleStop} className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg text-sm font-medium">Stop</button>
+          <div className="flex items-center gap-3">
+            <h2 className="text-2xl font-bold text-gray-100">Normalizing Audio</h2>
+            {jobConfig?.hwaccel && <HwAccelBadge hwaccel={jobConfig.hwaccel} videoMode={jobConfig.video_mode} />}
+          </div>
+          <button onClick={handleStop} disabled={stopping} className="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium">
+            {stopping ? 'Stopping…' : 'Stop'}
+          </button>
         </div>
+        {stopping && (
+          <div className="mb-4 py-3 px-4 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-400 text-sm flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+            Cancelling… Winding down active files. You will switch to results shortly.
+          </div>
+        )}
         <div className="bg-dark-800 rounded-lg p-6 mb-6">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm text-dark-300">Overall Progress</span>
@@ -224,10 +325,26 @@ export default function Normalize() {
                       <div>
                         <div className="flex items-center gap-2 mb-1">
                           <StatusBadge status={item.status} />
+                          {item.status === 'measuring' && (item.progress_pct ?? 0) > 0 && (
+                            <>
+                              <span className="text-xs text-violet-400">Analyzing…</span>
+                              <span className="text-xs font-mono text-violet-400">{Math.round(item.progress_pct!)}%</span>
+                            </>
+                          )}
                           {item.status === 'normalizing' && (item.progress_pct ?? 0) > 0 && (
                             <span className="text-xs font-mono text-teal-400">{Math.round(item.progress_pct!)}%</span>
                           )}
                         </div>
+                        {item.status === 'pre-screening' && (
+                          <div className="w-full h-1.5 bg-dark-700 rounded-full overflow-hidden">
+                            <div className="h-full w-1/3 bg-violet-500/60 rounded-full animate-pulse" />
+                          </div>
+                        )}
+                        {item.status === 'measuring' && (
+                          <div className="w-full h-1.5 bg-dark-700 rounded-full overflow-hidden">
+                            <div className="h-full bg-violet-500/60 rounded-full transition-all duration-300" style={{ width: (item.progress_pct ?? 0) + '%' }} />
+                          </div>
+                        )}
                         {item.status === 'normalizing' && (
                           <div className="w-full h-1.5 bg-dark-700 rounded-full overflow-hidden">
                             <div className="h-full bg-teal-500/60 rounded-full transition-all duration-300" style={{ width: (item.progress_pct ?? 0) + '%' }} />
@@ -252,8 +369,11 @@ export default function Normalize() {
   const renderResults = () => (
     <>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-100">Normalization Complete</h2>
-        <button onClick={() => { setPhase('candidates'); setJobId(''); setProgress(null); setItems([]); }} className="px-4 py-2 bg-teal-600 hover:bg-teal-500 text-white rounded-lg text-sm font-medium">Back to Candidates</button>
+        <div className="flex items-center gap-3">
+          <h2 className="text-2xl font-bold text-gray-100">Normalization Complete</h2>
+          {jobConfig?.hwaccel && <HwAccelBadge hwaccel={jobConfig.hwaccel} videoMode={jobConfig.video_mode} />}
+        </div>
+        <button onClick={() => { setPhase('candidates'); setJobId(''); setProgress(null); setItems([]); setJobConfig(null); }} className="px-4 py-2 bg-teal-600 hover:bg-teal-500 text-white rounded-lg text-sm font-medium">Back to Candidates</button>
       </div>
       <div className="grid grid-cols-3 gap-4 mb-6">
         <div className="bg-dark-800 rounded-lg p-4 text-center"><div className="text-2xl font-bold text-green-400">{progress?.succeeded || 0}</div><div className="text-xs text-dark-400 mt-1">Succeeded</div></div>
@@ -364,14 +484,55 @@ export default function Normalize() {
 
             {showAdvanced && (
               <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-4">
-                <div>
-                  <div className="flex items-center gap-1 mb-1">
-                    <label className="text-xs text-dark-400">HW Acceleration</label>
-                    <InfoTip text="Use your GPU to speed up video re-encoding. 'Auto' detects the best available option. Only applies when video re-encoding is needed." />
+                <div className="md:col-span-2">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="flex items-center gap-1">
+                      <label className="text-xs text-dark-400">HW Acceleration</label>
+                      <InfoTip text="Use your GPU to speed up video re-encoding. 'Auto' detects the best available option. Only applies when video re-encoding is needed." />
+                    </div>
+                    {showAdvanced && (
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={() => getHWAccelStatus(true).then(setHwStatus).catch(() => setHwStatus(null))} className="text-xs text-teal-400 hover:text-teal-300 flex items-center gap-1">
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                          Re-detect
+                        </button>
+                        <button type="button" disabled={hwTestLoading} onClick={async () => { setHwTestResult(null); setHwTestLoading(true); try { const res = await testHWAccel(config.hwaccel); setHwTestResult(res); } catch { setHwTestResult({ ok: false, error: 'Test request failed' }); } finally { setHwTestLoading(false); } }} className="text-xs text-teal-400 hover:text-teal-300 disabled:opacity-50 flex items-center gap-1">
+                          {hwTestLoading ? 'Testing…' : 'Validate'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                   <select value={config.hwaccel} onChange={e => setConfig({ ...config, hwaccel: e.target.value })} className="w-full px-3 py-1.5 bg-dark-700 border border-dark-600 rounded text-sm text-gray-100">
-                    <option value="auto">Auto Detect</option><option value="vaapi">VAAPI (Intel/AMD)</option><option value="nvenc">NVENC (NVIDIA)</option><option value="cpu">CPU Only</option>
+                    <option value="auto">Auto Detect{hwStatus ? ` (→ ${hwStatus.detected.toUpperCase()})` : ''}</option>
+                    <option value="vaapi">VAAPI (Intel/AMD)</option>
+                    <option value="nvenc">NVENC (NVIDIA)</option>
+                    <option value="cpu">CPU Only</option>
                   </select>
+                  {config.hwaccel === 'auto' && hwStatus && (
+                    <p className="mt-1 text-xs text-dark-400">Will use: <span className="text-teal-400 font-medium">{hwStatus.detected.toUpperCase()}</span></p>
+                  )}
+                  {hwStatus && config.hwaccel !== 'auto' && (() => {
+                    const m = hwStatus.methods.find(x => x.name === config.hwaccel);
+                    if (m && !m.available) {
+                      return <p className="mt-1 text-xs text-teal-400">{config.hwaccel.toUpperCase()} not detected — encoding may fail</p>;
+                    }
+                    return null;
+                  })()}
+                  {hwStatus && (
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-dark-400">
+                      {hwStatus.methods.map(m => (
+                        <span key={m.name} className="flex items-center gap-1">
+                          <span className={`inline-block w-1.5 h-1.5 rounded-full ${m.available ? 'bg-green-500' : 'bg-dark-500'}`} />
+                          {m.name.toUpperCase()}{hwStatus.detected === m.name ? ' (detected)' : m.available ? ' (available)' : ' (unavailable)'}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {hwTestResult && (
+                    <p className={`mt-2 text-xs ${hwTestResult.ok ? 'text-green-400' : 'text-red-400'}`}>
+                      {hwTestResult.ok ? (hwTestResult.message ?? `Method ${hwTestResult.method ?? 'ok'} validated`) : (hwTestResult.error ?? 'Validation failed')}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <div className="flex items-center gap-1 mb-1">
@@ -495,13 +656,22 @@ export default function Normalize() {
         phase === 'results' ? renderResults() :
         renderCandidates()
       ) : (
-        <NormalizeHistory onRetry={(newJobId) => { setTopTab('normalize'); connectToJob(newJobId); }} />
+        <NormalizeHistory
+          onRetry={(newJobId) => { setTopTab('normalize'); connectToJob(newJobId); }}
+          onRepopulateFromJob={(candidates) => {
+            setLibraryMovies(candidates);
+            setSelected(new Set(candidates.map(c => c.file_path)));
+            setTab('library');
+            setTopTab('normalize');
+            setPhase('candidates');
+          }}
+        />
       )}
     </div>
   );
 }
 
-function NormalizeHistory({ onRetry }: { onRetry: (newJobId: string) => void }) {
+function NormalizeHistory({ onRetry, onRepopulateFromJob }: { onRetry: (newJobId: string) => void; onRepopulateFromJob?: (candidates: NormalizeCandidate[]) => void }) {
   const [jobs, setJobs] = useState<NormalizeJob[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -510,15 +680,19 @@ function NormalizeHistory({ onRetry }: { onRetry: (newJobId: string) => void }) 
   const [expandedItems, setExpandedItems] = useState<NormalizeJobItem[]>([]);
   const [loadingItems, setLoadingItems] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [repopulating, setRepopulating] = useState(false);
   const perPage = 10;
+  const pendingCount = expandedItems.filter(it => it.status === 'pending').length;
 
   const loadJobs = useCallback(async (p: number) => {
     setLoading(true);
+    setExpandedJob(null);
+    setExpandedItems([]);
     try {
       const data = await getNormalizeJobs(p, perPage);
-      setJobs(data.jobs);
-      setTotal(data.total);
-      setPage(data.page);
+      setJobs(data.jobs ?? []);
+      setTotal(data.total ?? 0);
+      setPage(data.page ?? p);
     } catch {
       /* ignore */
     } finally {
@@ -590,27 +764,49 @@ function NormalizeHistory({ onRetry }: { onRetry: (newJobId: string) => void }) 
 
           {expandedJob === job.id && (
             <div className="border-t border-dark-700">
-              {job.failed > 0 && (
-                <div className="px-4 pt-3 flex justify-end">
-                  <button
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      setRetrying(true);
-                      try {
-                        const { job_id } = await retryNormalize(job.id);
-                        await loadJobs(page);
-                        onRetry(job_id);
-                      } catch {
-                        /* ignore */
-                      } finally {
-                        setRetrying(false);
-                      }
-                    }}
-                    disabled={retrying}
-                    className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
-                  >
-                    {retrying ? 'Retrying...' : `Retry Failed (${job.failed})`}
-                  </button>
+              {(job.failed > 0 || pendingCount > 0) && (
+                <div className="px-4 pt-3 flex flex-wrap justify-end gap-2">
+                  {job.failed > 0 && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        setRetrying(true);
+                        try {
+                          const { job_id } = await retryNormalize(job.id);
+                          await loadJobs(page);
+                          onRetry(job_id);
+                        } catch {
+                          /* ignore */
+                        } finally {
+                          setRetrying(false);
+                        }
+                      }}
+                      disabled={retrying}
+                      className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+                    >
+                      {retrying ? 'Retrying...' : `Retry Failed (${job.failed})`}
+                    </button>
+                  )}
+                  {pendingCount > 0 && onRepopulateFromJob && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        setRepopulating(true);
+                        try {
+                          const candidates = await getPendingCandidatesFromJob(job.id);
+                          onRepopulateFromJob(candidates);
+                        } catch {
+                          /* ignore */
+                        } finally {
+                          setRepopulating(false);
+                        }
+                      }}
+                      disabled={repopulating}
+                      className="px-3 py-1.5 bg-dark-600 hover:bg-dark-500 text-gray-100 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 border border-dark-500"
+                    >
+                      {repopulating ? 'Loading...' : `Use ${pendingCount} pending as candidates`}
+                    </button>
+                  )}
                 </div>
               )}
               {loadingItems ? (

@@ -180,6 +180,8 @@ func main() {
 			r.Post("/sonarr/library/refresh", handlers.RefreshSonarrLibrary)
 			r.Get("/sonarr/series/{id}/episodes", handlers.GetSonarrSeriesDetail)
 
+			r.Get("/normalize/hwdetect", handlers.GetHWAccelStatus)
+			r.Get("/normalize/hwdetect/test", handlers.TestHWAccel)
 			r.Get("/normalize/candidates", handlers.GetNormalizeCandidates)
 			r.Get("/normalize/sonarr-candidates", handlers.GetSonarrNormalizeCandidates)
 			r.Post("/normalize/start", handlers.StartNormalize)
@@ -187,6 +189,7 @@ func main() {
 			r.Post("/normalize/retry/{id}", handlers.RetryNormalize)
 			r.Get("/normalize/jobs", handlers.GetNormalizeJobs)
 			r.Get("/normalize/jobs/{id}", handlers.GetNormalizeJob)
+			r.Get("/normalize/jobs/{id}/pending-candidates", handlers.GetPendingCandidates)
 			r.Get("/normalize/config", handlers.GetNormalizeConfigHandler)
 			r.Put("/normalize/config", handlers.UpdateNormalizeConfig)
 			r.Delete("/normalize/history", handlers.ClearNormalizeHistory)

@@ -3,6 +3,7 @@ package normalize
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,7 +58,7 @@ func DefaultConfig() NormalizeConfig {
 		HWAccel:      "auto",
 		AudioBitrate: "320k",
 		Backup:       false,
-		Parallel:     1,
+		Parallel:     2,
 		VideoMode:    "copy",
 		MeasureMode:  "auto",
 	}
@@ -65,6 +66,96 @@ func DefaultConfig() NormalizeConfig {
 
 type ProgressCallback func(FileProgress)
 type ResultCallback func(FileResult)
+
+// FileProbe holds consolidated probe results from a single ffprobe invocation,
+// eliminating redundant subprocess calls for duration, audio presence, and metadata.
+type FileProbe struct {
+	Duration    float64
+	HasAudio    bool
+	Metadata    MetadataResult
+	probeError  error
+}
+
+// ProbeFile runs a single ffprobe call to extract duration, audio stream presence,
+// and loudness metadata tags. This replaces separate GetDuration + HasAudioStream +
+// ReadLoudnessMetadata calls that each spawned their own subprocess.
+func ProbeFile(filePath string, targetLUFS float64) FileProbe {
+	cmd := exec.Command("ffprobe", "-v", "error",
+		"-show_entries", "format=duration",
+		"-show_entries", "stream=index,codec_type",
+		"-show_entries", "stream_tags=CINEFORGE_TARGET_LUFS,CINEFORGE_MEASURED_LUFS,R128_TRACK_GAIN,REPLAYGAIN_TRACK_GAIN",
+		"-of", "json", "-i", filePath)
+	out, err := cmd.Output()
+	if err != nil {
+		return FileProbe{probeError: fmt.Errorf("ffprobe failed: %w", err)}
+	}
+
+	var probe struct {
+		Format struct {
+			Duration string `json:"duration"`
+		} `json:"format"`
+		Streams []struct {
+			Index     int               `json:"index"`
+			CodecType string            `json:"codec_type"`
+			Tags      map[string]string `json:"tags"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		return FileProbe{probeError: fmt.Errorf("ffprobe parse failed: %w", err)}
+	}
+
+	fp := FileProbe{}
+	fp.Duration, _ = strconv.ParseFloat(strings.TrimSpace(probe.Format.Duration), 64)
+
+	var firstAudioTags map[string]string
+	for _, s := range probe.Streams {
+		if s.CodecType == "audio" {
+			fp.HasAudio = true
+			firstAudioTags = s.Tags
+			break
+		}
+	}
+
+	fp.Metadata = parseMetadataTags(firstAudioTags, targetLUFS)
+	return fp
+}
+
+func parseMetadataTags(tags map[string]string, targetLUFS float64) MetadataResult {
+	if tags == nil {
+		return MetadataResult{}
+	}
+
+	if cfTarget, ok := tags["CINEFORGE_TARGET_LUFS"]; ok {
+		if v, err := strconv.ParseFloat(cfTarget, 64); err == nil {
+			matches := math.Abs(v-targetLUFS) < 0.1
+			estimatedLUFS := targetLUFS
+			if measured, ok := tags["CINEFORGE_MEASURED_LUFS"]; ok {
+				if mv, err := strconv.ParseFloat(measured, 64); err == nil {
+					estimatedLUFS = mv
+				}
+			}
+			return MetadataResult{EstimatedLUFS: estimatedLUFS, MatchesTarget: matches, Found: true}
+		}
+	}
+
+	if r128, ok := tags["R128_TRACK_GAIN"]; ok {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(r128), 64); err == nil {
+			gainDB := v / 256.0
+			estimated := -23.0 - gainDB
+			return MetadataResult{EstimatedLUFS: estimated, Found: true}
+		}
+	}
+
+	if rg, ok := tags["REPLAYGAIN_TRACK_GAIN"]; ok {
+		cleaned := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rg), "dB"))
+		if v, err := strconv.ParseFloat(cleaned, 64); err == nil {
+			estimated := -18.0 - v
+			return MetadataResult{EstimatedLUFS: estimated, Found: true}
+		}
+	}
+
+	return MetadataResult{}
+}
 
 func GetDuration(filePath string) (float64, error) {
 	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -86,14 +177,34 @@ func HasAudioStream(filePath string) (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func MeasureLoudness(filePath string, targetLUFS float64) (*LoudnessInfo, error) {
+func MeasureLoudness(ctx context.Context, filePath string, targetLUFS float64, duration float64, onProgress ProgressCallback) (*LoudnessInfo, error) {
 	af := fmt.Sprintf("loudnorm=I=%.1f:TP=-1.5:LRA=11:print_format=json", targetLUFS)
-	cmd := exec.Command("ffmpeg", "-hide_banner", "-i", filePath,
-		"-map", "0:a:0", "-af", af, "-f", "null", "-")
+
+	args := []string{"-y", "-hide_banner"}
+	if onProgress != nil && duration > 0 {
+		args = append(args, "-progress", "pipe:1")
+	}
+	args = append(args, "-i", filePath, "-map", "0:a:0", "-af", af, "-f", "null", "-")
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("loudness measurement failed: %w\n%s", err, stderr.String())
+	}
+
+	if onProgress != nil && duration > 0 {
+		drainProgressPipe(stdout, filePath, "measuring", duration, onProgress)
+	} else {
+		_, _ = io.Copy(io.Discard, stdout)
+	}
+
+	if err := cmd.Wait(); err != nil {
 		return nil, fmt.Errorf("loudness measurement failed: %w\n%s", err, stderr.String())
 	}
 
@@ -176,10 +287,10 @@ func ReadLoudnessMetadata(filePath string, targetLUFS float64) MetadataResult {
 }
 
 // SampleMeasureLoudness measures ~60 seconds from the middle of the file for a quick LUFS estimate.
-func SampleMeasureLoudness(filePath string, targetLUFS float64) (float64, error) {
-	duration, err := GetDuration(filePath)
-	if err != nil || duration <= 0 {
-		return 0, fmt.Errorf("could not determine duration: %w", err)
+// Pass a pre-probed duration to avoid a redundant ffprobe call.
+func SampleMeasureLoudness(ctx context.Context, filePath string, targetLUFS float64, duration float64) (float64, error) {
+	if duration <= 0 {
+		return 0, fmt.Errorf("invalid duration for sample measurement")
 	}
 
 	sampleDur := 60.0
@@ -192,7 +303,7 @@ func SampleMeasureLoudness(filePath string, targetLUFS float64) (float64, error)
 	}
 
 	af := fmt.Sprintf("loudnorm=I=%.1f:TP=-1.5:LRA=11:print_format=json", targetLUFS)
-	cmd := exec.Command("ffmpeg", "-hide_banner",
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner",
 		"-ss", fmt.Sprintf("%.1f", seekPos), "-t", fmt.Sprintf("%.1f", sampleDur),
 		"-i", filePath, "-map", "0:a:0", "-af", af, "-f", "null", "-")
 
@@ -243,102 +354,131 @@ func buildNormalizeArgs(filePath, tempPath string, info *LoudnessInfo, measuredL
 		cfg.TargetLUFS, info.InputI, info.InputTP, info.InputLRA, info.InputThresh, info.TargetOffset,
 	)
 
-	args := []string{"-y", "-progress", "pipe:1", "-hide_banner", "-i", filePath,
-		"-map", "0:v", "-map", "0:a:0"}
+	args := []string{"-y", "-progress", "pipe:1", "-hide_banner"}
 
 	if cfg.VideoMode == "copy" {
-		args = append(args, "-c:v", "copy")
+		// No hwaccel flags needed: video is stream-copied so the GPU has nothing to
+		// decode or encode. Adding -hwaccel here only adds startup overhead and can
+		// trigger failures on files the GPU decoder doesn't support.
+		args = append(args, "-i", filePath,
+			"-map", "0", "-map", "-0:d?",
+			"-c", "copy",
+			"-c:a:0", "aac")
 	} else {
-		hwAccel := cfg.HWAccel
-		if hwAccel == "auto" {
-			hwAccel = DetectHWAccel()
-		}
-		switch hwAccel {
+		switch cfg.HWAccel {
 		case "vaapi":
-			args = []string{"-y", "-progress", "pipe:1", "-hide_banner",
-				"-vaapi_device", "/dev/dri/renderD128", "-i", filePath,
-				"-map", "0:v", "-map", "0:a:0",
-				"-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-qp", "23"}
+			// Full GPU pipeline: decode on VAAPI, keep frames in GPU memory,
+			// encode with h264_vaapi. No hwupload needed since -hwaccel_output_format
+			// vaapi keeps decoded frames on the GPU surface.
+			args = append(args,
+				"-hwaccel", "vaapi",
+				"-hwaccel_device", vaapiDevice,
+				"-hwaccel_output_format", "vaapi",
+				"-i", filePath,
+				"-map", "0", "-map", "-0:d?",
+				"-c", "copy",
+				"-c:v", "h264_vaapi", "-qp", "23",
+				"-c:a:0", "aac")
 		case "nvenc":
-			args = []string{"-y", "-progress", "pipe:1", "-hide_banner",
-				"-hwaccel", "cuda", "-i", filePath,
-				"-map", "0:v", "-map", "0:a:0",
-				"-c:v", "h264_nvenc", "-preset", "p7", "-cq", "23"}
+			// Full GPU pipeline: CUDA decode keeps frames on device, NVENC encodes
+			// without CPU-side frame transfer.
+			args = append(args,
+				"-hwaccel", "cuda",
+				"-hwaccel_output_format", "cuda",
+				"-i", filePath,
+				"-map", "0", "-map", "-0:d?",
+				"-c", "copy",
+				"-c:v", "h264_nvenc", "-preset", "p7", "-cq", "23",
+				"-c:a:0", "aac")
 		default:
-			args = append(args, "-c:v", "libx264", "-preset", "medium", "-crf", "23")
+			args = append(args, "-i", filePath,
+				"-map", "0", "-map", "-0:d?",
+				"-c", "copy",
+				"-c:v", "libx264", "-preset", "medium", "-crf", "23",
+				"-c:a:0", "aac")
 		}
 	}
 
-	args = append(args, "-af", af, "-c:a", "aac", "-b:a", cfg.AudioBitrate,
+	args = append(args,
+		"-af", af,
+		"-b:a:0", cfg.AudioBitrate,
 		"-metadata:s:a:0", fmt.Sprintf("CINEFORGE_TARGET_LUFS=%.1f", cfg.TargetLUFS),
 		"-metadata:s:a:0", fmt.Sprintf("CINEFORGE_MEASURED_LUFS=%.1f", measuredLUFS),
 		tempPath)
 	return args
 }
 
-func NormalizeFile(filePath string, cfg NormalizeConfig, duration float64,
+// NormalizeFile runs the full normalize pipeline: probe -> prescreen -> measure -> encode.
+// The probe step is consolidated into a single ffprobe call. On copy-mode encode failure,
+// only the encode step is retried with the already-measured loudness data.
+func NormalizeFile(ctx context.Context, filePath string, cfg NormalizeConfig, duration float64,
 	onProgress ProgressCallback, onResult ResultCallback) FileResult {
 
 	movieTitle := strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
 	result := FileResult{FilePath: filePath, MovieTitle: movieTitle}
 
-	hasAudio, err := HasAudioStream(filePath)
-	if err != nil || !hasAudio {
+	// --- Stage 1: Consolidated probe (one ffprobe for duration + audio + metadata) ---
+	probe := ProbeFile(filePath, cfg.TargetLUFS)
+	if probe.probeError != nil {
+		result.Status = "failed"
+		result.Error = probe.probeError.Error()
+		return result
+	}
+	if !probe.HasAudio {
 		result.Status = "skipped"
 		result.Error = "no audio stream"
 		return result
 	}
+	if duration <= 0 {
+		duration = probe.Duration
+	}
+	result.Duration = duration
 
 	mode := cfg.MeasureMode
 	if mode == "" {
 		mode = "full"
 	}
 
-	// Pre-screening for "auto" and "sample" modes
+	// --- Stage 2: Pre-screening (metadata check + sample measurement) ---
 	if mode == "auto" || mode == "sample" {
 		if onProgress != nil {
 			onProgress(FileProgress{FilePath: filePath, Phase: "pre-screening"})
 		}
 
-		skipPrescreen := false
-
-		if mode == "auto" {
-			meta := ReadLoudnessMetadata(filePath, cfg.TargetLUFS)
-			if meta.Found && meta.MatchesTarget {
-				log.Printf("[normalize] %s has matching CINEFORGE metadata (target %.1f), skipping", filePath, cfg.TargetLUFS)
-				result.MeasuredLUFS = meta.EstimatedLUFS
-				result.Status = "done"
-				result.Duration = duration
-				return result
-			}
-			if meta.Found {
-				log.Printf("[normalize] %s has metadata (estimated %.1f LUFS) but target changed, will re-normalize", filePath, meta.EstimatedLUFS)
-			}
+		if mode == "auto" && probe.Metadata.Found && probe.Metadata.MatchesTarget {
+			log.Printf("[normalize] %s has matching CINEFORGE metadata (target %.1f), skipping", filePath, cfg.TargetLUFS)
+			result.MeasuredLUFS = probe.Metadata.EstimatedLUFS
+			result.Status = "done"
+			return result
+		}
+		if mode == "auto" && probe.Metadata.Found {
+			log.Printf("[normalize] %s has metadata (estimated %.1f LUFS) but target changed, will re-normalize", filePath, probe.Metadata.EstimatedLUFS)
 		}
 
-		if !skipPrescreen {
-			sampleLUFS, sampleErr := SampleMeasureLoudness(filePath, cfg.TargetLUFS)
-			if sampleErr == nil {
-				result.MeasuredLUFS = sampleLUFS
-				if math.Abs(sampleLUFS-cfg.TargetLUFS) <= 0.5 {
-					log.Printf("[normalize] %s sample at %.1f LUFS (target %.1f), skipping", filePath, sampleLUFS, cfg.TargetLUFS)
-					result.Status = "done"
-					result.Duration = duration
-					return result
-				}
-			} else {
-				log.Printf("[normalize] %s sample measurement failed, falling back to full: %v", filePath, sampleErr)
+		sampleLUFS, sampleErr := SampleMeasureLoudness(ctx, filePath, cfg.TargetLUFS, duration)
+		if sampleErr == nil {
+			result.MeasuredLUFS = sampleLUFS
+			if math.Abs(sampleLUFS-cfg.TargetLUFS) <= 0.5 {
+				log.Printf("[normalize] %s sample at %.1f LUFS (target %.1f), skipping", filePath, sampleLUFS, cfg.TargetLUFS)
+				result.Status = "done"
+				return result
 			}
+		} else {
+			log.Printf("[normalize] %s sample measurement failed, falling back to full: %v", filePath, sampleErr)
 		}
 	}
 
-	// Full measurement (always reached for "full" mode, fallthrough for others)
+	// --- Stage 3: Full loudness measurement ---
 	if onProgress != nil {
 		onProgress(FileProgress{FilePath: filePath, Phase: "measuring"})
 	}
 
-	info, err := MeasureLoudness(filePath, cfg.TargetLUFS)
+	info, err := MeasureLoudness(ctx, filePath, cfg.TargetLUFS, duration, onProgress)
 	if err != nil {
+		if ctx.Err() != nil {
+			result.Status = "cancelled"
+			return result
+		}
 		result.Status = "failed"
 		result.Error = err.Error()
 		return result
@@ -352,7 +492,6 @@ func NormalizeFile(filePath string, cfg NormalizeConfig, duration float64,
 
 	measuredLUFS, _ := strconv.ParseFloat(info.InputI, 64)
 	result.MeasuredLUFS = measuredLUFS
-	result.Duration = duration
 
 	if math.Abs(measuredLUFS-cfg.TargetLUFS) <= 0.5 {
 		log.Printf("[normalize] %s already at %.1f LUFS (target %.1f), skipping re-encode", filePath, measuredLUFS, cfg.TargetLUFS)
@@ -360,86 +499,22 @@ func NormalizeFile(filePath string, cfg NormalizeConfig, duration float64,
 		return result
 	}
 
-	dir := filepath.Dir(filePath)
-	ext := filepath.Ext(filePath)
-	base := strings.TrimSuffix(filepath.Base(filePath), ext)
-	tmpFile, err := os.CreateTemp(dir, base+"_norm_*"+ext)
-	if err != nil {
-		result.Status = "failed"
-		result.Error = fmt.Sprintf("failed to create temp file: %v", err)
-		return result
-	}
-	tempPath := tmpFile.Name()
-	tmpFile.Close()
-
-	if onProgress != nil {
-		onProgress(FileProgress{FilePath: filePath, Phase: "normalizing"})
+	// --- Stage 4: Encode (with copy-mode fallback that reuses measured data) ---
+	encodeResult := runEncode(ctx, filePath, info, measuredLUFS, cfg, duration, onProgress)
+	if encodeResult.err != nil && cfg.VideoMode == "copy" {
+		log.Printf("[normalize] -c:v copy failed for %s, retrying with full re-encode (reusing measured loudness)", filePath)
+		retryCfg := cfg
+		retryCfg.VideoMode = "reencode"
+		encodeResult = runEncode(ctx, filePath, info, measuredLUFS, retryCfg, duration, onProgress)
 	}
 
-	args := buildNormalizeArgs(filePath, tempPath, info, measuredLUFS, cfg)
-	cmd := exec.Command("ffmpeg", args...)
-
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		result.Status = "failed"
-		result.Error = fmt.Sprintf("failed to create stdout pipe: %v", err)
-		return result
-	}
-
-	if err := cmd.Start(); err != nil {
-		result.Status = "failed"
-		result.Error = fmt.Sprintf("failed to start ffmpeg: %v", err)
-		return result
-	}
-
-	if onProgress != nil && duration > 0 {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.HasPrefix(line, "out_time_us=") {
-				val := strings.SplitN(line, "=", 2)
-				if len(val) == 2 {
-					us, _ := strconv.ParseFloat(val[1], 64)
-					pct := (us / 1e6 / duration) * 100
-					if pct > 100 {
-						pct = 100
-					}
-					onProgress(FileProgress{FilePath: filePath, Phase: "normalizing", Percent: pct})
-				}
-			} else if strings.HasPrefix(line, "out_time=") {
-				val := strings.SplitN(line, "=", 2)
-				if len(val) == 2 {
-					onProgress(FileProgress{FilePath: filePath, Phase: "normalizing", OutTime: val[1]})
-				}
-			} else if strings.HasPrefix(line, "speed=") {
-				val := strings.SplitN(line, "=", 2)
-				if len(val) == 2 {
-					onProgress(FileProgress{FilePath: filePath, Phase: "normalizing", Speed: val[1]})
-				}
-			}
-		}
-	}
-
-	if err := cmd.Wait(); err != nil {
-		os.Remove(tempPath)
-		if cfg.VideoMode == "copy" {
-			log.Printf("[normalize] -c:v copy failed for %s, retrying with full re-encode", filePath)
-			retryCfg := cfg
-			retryCfg.VideoMode = "reencode"
-			return NormalizeFile(filePath, retryCfg, duration, onProgress, nil)
+	if encodeResult.err != nil {
+		if ctx.Err() != nil {
+			result.Status = "cancelled"
+			return result
 		}
 		result.Status = "failed"
-		result.Error = fmt.Sprintf("ffmpeg failed: %v\n%s", err, stderrBuf.String())
-		return result
-	}
-
-	fi, err := os.Stat(tempPath)
-	if err != nil || fi.Size() == 0 {
-		os.Remove(tempPath)
-		result.Status = "failed"
-		result.Error = "output file is empty or missing"
+		result.Error = encodeResult.err.Error()
 		return result
 	}
 
@@ -450,8 +525,8 @@ func NormalizeFile(filePath string, cfg NormalizeConfig, duration float64,
 		}
 	}
 
-	if err := os.Rename(tempPath, filePath); err != nil {
-		os.Remove(tempPath)
+	if err := os.Rename(encodeResult.tempPath, filePath); err != nil {
+		os.Remove(encodeResult.tempPath)
 		result.Status = "failed"
 		result.Error = fmt.Sprintf("failed to replace original: %v", err)
 		return result
@@ -459,6 +534,103 @@ func NormalizeFile(filePath string, cfg NormalizeConfig, duration float64,
 
 	result.Status = "done"
 	return result
+}
+
+type encodeResult struct {
+	tempPath string
+	err      error
+}
+
+// runEncode executes the ffmpeg encode pass, reusing pre-measured loudness data.
+// Returns the temp file path on success or an error. Caller is responsible for
+// renaming the temp file into place.
+func runEncode(ctx context.Context, filePath string, info *LoudnessInfo, measuredLUFS float64,
+	cfg NormalizeConfig, duration float64, onProgress ProgressCallback) encodeResult {
+
+	dir := filepath.Dir(filePath)
+	ext := filepath.Ext(filePath)
+	base := strings.TrimSuffix(filepath.Base(filePath), ext)
+	tmpFile, err := os.CreateTemp(dir, base+"_norm_*"+ext)
+	if err != nil {
+		return encodeResult{err: fmt.Errorf("failed to create temp file: %v", err)}
+	}
+	tempPath := tmpFile.Name()
+	tmpFile.Close()
+
+	if onProgress != nil {
+		onProgress(FileProgress{FilePath: filePath, Phase: "normalizing"})
+	}
+
+	args := buildNormalizeArgs(filePath, tempPath, info, measuredLUFS, cfg)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		os.Remove(tempPath)
+		return encodeResult{err: fmt.Errorf("failed to create stdout pipe: %v", err)}
+	}
+
+	if err := cmd.Start(); err != nil {
+		os.Remove(tempPath)
+		return encodeResult{err: fmt.Errorf("failed to start ffmpeg: %v", err)}
+	}
+
+	if onProgress != nil && duration > 0 {
+		drainProgressPipe(stdout, filePath, "normalizing", duration, onProgress)
+	} else {
+		_, _ = io.Copy(io.Discard, stdout)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		os.Remove(tempPath)
+		return encodeResult{err: fmt.Errorf("ffmpeg failed: %v\n%s", err, stderrBuf.String())}
+	}
+
+	fi, err := os.Stat(tempPath)
+	if err != nil || fi.Size() == 0 {
+		os.Remove(tempPath)
+		return encodeResult{err: fmt.Errorf("output file is empty or missing")}
+	}
+
+	return encodeResult{tempPath: tempPath}
+}
+
+// drainProgressPipe reads ffmpeg -progress pipe:1 output and emits coalesced
+// progress callbacks. Only emits when percent changes by >= 1% to reduce
+// callback frequency and downstream DB/SSE churn.
+func drainProgressPipe(stdout io.Reader, filePath, phase string, duration float64, onProgress ProgressCallback) {
+	scanner := bufio.NewScanner(stdout)
+	var lastPct float64
+	var lastSpeed, lastOutTime string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "out_time_us=") {
+			val := strings.SplitN(line, "=", 2)
+			if len(val) == 2 {
+				us, _ := strconv.ParseFloat(val[1], 64)
+				pct := (us / 1e6 / duration) * 100
+				if pct > 100 {
+					pct = 100
+				}
+				if pct-lastPct >= 1.0 || pct >= 100 {
+					onProgress(FileProgress{FilePath: filePath, Phase: phase, Percent: pct, Speed: lastSpeed, OutTime: lastOutTime})
+					lastPct = pct
+				}
+			}
+		} else if strings.HasPrefix(line, "out_time=") {
+			val := strings.SplitN(line, "=", 2)
+			if len(val) == 2 {
+				lastOutTime = val[1]
+			}
+		} else if strings.HasPrefix(line, "speed=") {
+			val := strings.SplitN(line, "=", 2)
+			if len(val) == 2 {
+				lastSpeed = val[1]
+			}
+		}
+	}
 }
 
 func RunJob(files []struct {
@@ -474,10 +646,6 @@ func RunJob(files []struct {
 	}
 
 	hwAccel := cfg.HWAccel
-	if hwAccel == "auto" {
-		hwAccel = DetectHWAccel()
-	}
-
 	maxHW := 4
 	switch hwAccel {
 	case "nvenc":
@@ -499,7 +667,7 @@ func RunJob(files []struct {
 			defer wg.Done()
 			defer func() { <-sem }()
 			dur, _ := GetDuration(path)
-			result := NormalizeFile(path, cfg, dur, onProgress, onResult)
+			result := NormalizeFile(context.Background(), path, cfg, dur, onProgress, onResult)
 			result.MovieTitle = title
 			if onResult != nil {
 				onResult(result)

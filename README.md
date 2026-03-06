@@ -24,6 +24,12 @@ The UI will be available at [http://localhost:8085](http://localhost:8085).
 2. Select a quality profile and root folder, then save.
 3. Browse your library, import movies, or normalize audio from the sidebar navigation.
 
+## Data directory
+
+Data (SQLite DB, encrypted API keys) is stored at `/var/lib/cineforge` on the host (mounted as `/data` in the container). Create it with correct ownership if needed: `sudo mkdir -p /var/lib/cineforge && sudo chown 1000:1000 /var/lib/cineforge` (or your PUID/PGID). The entrypoint will chown `/data` at startup.
+
+**Migrating from the old Docker named volume:** If you previously used the `cineforge-data` volume, stop the stack, create `/var/lib/cineforge`, then copy data: `docker run --rm -v cineforge-data:/from -v /var/lib/cineforge:/to alpine sh -c "cp -a /from/. /to/"`. Update to the new compose and start again.
+
 ## Media Volume
 
 To use audio normalization, CineForge needs access to your media files. Copy `docker-compose.override.example.yml` to `docker-compose.override.yml` and configure your media volume mount:

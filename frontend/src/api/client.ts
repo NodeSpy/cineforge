@@ -234,6 +234,18 @@ export interface NormalizeCandidate {
   already_normalized: boolean;
 }
 
+export interface HWAccelMethod {
+  name: string;
+  available: boolean;
+  details: string;
+  device: string;
+}
+
+export interface HWAccelStatus {
+  detected: string;
+  methods: HWAccelMethod[];
+}
+
 export interface NormalizeConfig {
   target_lufs: number;
   hwaccel: string;
@@ -267,6 +279,7 @@ export interface NormalizeJobItem {
 
 export interface NormalizeJobDetail extends NormalizeJob {
   items: NormalizeJobItem[];
+  config?: NormalizeConfig;
 }
 
 export interface PaginatedNormalizeJobs {
@@ -283,6 +296,7 @@ export interface NormalizeStatusEvent {
   succeeded: number;
   failed: number;
   skipped: number;
+  config?: NormalizeConfig;
 }
 
 export interface NormalizeItemStatus {
@@ -609,11 +623,23 @@ export function subscribeNormalizeStatus(
   onError: (err: string) => void,
 ): EventSource {
   const es = new EventSource(`${BASE}/normalize/status/${jobId}`);
+  let currentItems: NormalizeItemStatus[] = [];
   es.addEventListener('progress', (e) => {
     try { onProgress(JSON.parse((e as MessageEvent).data)); } catch { /* skip */ }
   });
   es.addEventListener('items', (e) => {
-    try { onItems(JSON.parse((e as MessageEvent).data)); } catch { /* skip */ }
+    try {
+      currentItems = JSON.parse((e as MessageEvent).data);
+      onItems(currentItems);
+    } catch { /* skip */ }
+  });
+  es.addEventListener('items_delta', (e) => {
+    try {
+      const changed: NormalizeItemStatus[] = JSON.parse((e as MessageEvent).data);
+      const byPath = new Map(changed.map(it => [it.file_path, it]));
+      currentItems = currentItems.map(it => byPath.get(it.file_path) ?? it);
+      onItems(currentItems);
+    } catch { /* skip */ }
   });
   es.addEventListener('done', (e) => {
     try { onDone(JSON.parse((e as MessageEvent).data).status); } catch { /* skip */ }
@@ -624,7 +650,7 @@ export function subscribeNormalizeStatus(
 }
 
 export async function getNormalizeJobs(page = 1, perPage = 10): Promise<PaginatedNormalizeJobs> {
-  const res = await fetch(`${BASE}/normalize/jobs?page=${page}&per_page=${perPage}`);
+  const res = await fetch(`${BASE}/normalize/jobs?page=${page}&per_page=${perPage}`, { cache: 'no-store' });
   if (!res.ok) throw new Error('Failed to fetch normalize jobs');
   return res.json();
 }
@@ -635,9 +661,36 @@ export async function getNormalizeJob(id: string): Promise<NormalizeJobDetail> {
   return res.json();
 }
 
+export async function getPendingCandidatesFromJob(jobId: string): Promise<NormalizeCandidate[]> {
+  const res = await fetch(`${BASE}/normalize/jobs/${jobId}/pending-candidates`);
+  if (!res.ok) throw new Error('Failed to fetch pending candidates');
+  return res.json();
+}
+
 export async function clearNormalizeHistory(): Promise<void> {
   const res = await fetch(`${BASE}/normalize/history`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to clear normalize history');
+}
+
+export async function getHWAccelStatus(refresh = false): Promise<HWAccelStatus> {
+  const url = refresh ? `${BASE}/normalize/hwdetect?refresh=true` : `${BASE}/normalize/hwdetect`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Failed to fetch HW accel status');
+  return res.json();
+}
+
+export interface TestHWAccelResult {
+  ok: boolean;
+  method?: string;
+  message?: string;
+  error?: string;
+}
+
+export async function testHWAccel(method?: string): Promise<TestHWAccelResult> {
+  const url = method ? `${BASE}/normalize/hwdetect/test?method=${encodeURIComponent(method)}` : `${BASE}/normalize/hwdetect/test`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Failed to run HW accel test');
+  return res.json();
 }
 
 export async function getNormalizeConfig(): Promise<NormalizeConfig> {

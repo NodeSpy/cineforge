@@ -23,6 +23,15 @@ func TestSonarrConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if isMasked(req.SonarrAPIKey) {
+		cfg, err := config.Get()
+		if err != nil || config.SecretForUse(cfg.SonarrAPIKey) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "No stored Sonarr API key found"})
+			return
+		}
+		req.SonarrAPIKey = config.SecretForUse(cfg.SonarrAPIKey)
+	}
+
 	if req.SonarrURL == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Sonarr URL is required"})
 		return
@@ -51,7 +60,7 @@ func GetSonarrQualityProfiles(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []interface{}{})
 		return
 	}
-	client := sonarrClient.NewClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+	client := sonarrClient.NewClient(cfg.SonarrURL, config.SecretForUse(cfg.SonarrAPIKey))
 	profiles, err := client.GetQualityProfiles()
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -66,7 +75,7 @@ func GetSonarrRootFolders(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []interface{}{})
 		return
 	}
-	client := sonarrClient.NewClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+	client := sonarrClient.NewClient(cfg.SonarrURL, config.SecretForUse(cfg.SonarrAPIKey))
 	folders, err := client.GetRootFolders()
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -81,7 +90,7 @@ func GetSonarrTags(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []interface{}{})
 		return
 	}
-	client := sonarrClient.NewClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+	client := sonarrClient.NewClient(cfg.SonarrURL, config.SecretForUse(cfg.SonarrAPIKey))
 	tags, err := client.GetTags()
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -103,7 +112,7 @@ func CreateSonarrTag(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		return
 	}
-	client := sonarrClient.NewClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+	client := sonarrClient.NewClient(cfg.SonarrURL, config.SecretForUse(cfg.SonarrAPIKey))
 	tag, err := client.CreateTag(req.Label)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -155,7 +164,7 @@ func fetchAndCacheSonarrLibrary() (*SonarrLibraryResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.SonarrURL == "" || cfg.SonarrAPIKey == "" {
+	if cfg.SonarrURL == "" || config.SecretForUse(cfg.SonarrAPIKey) == "" {
 		return &SonarrLibraryResponse{
 			Series:          []sonarrClient.Series{},
 			Tags:            []sonarrClient.Tag{},
@@ -163,7 +172,7 @@ func fetchAndCacheSonarrLibrary() (*SonarrLibraryResponse, error) {
 			FilterOptions:   SonarrFilterOptions{},
 		}, nil
 	}
-	client := sonarrClient.NewClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+	client := sonarrClient.NewClient(cfg.SonarrURL, config.SecretForUse(cfg.SonarrAPIKey))
 
 	series, err := client.GetSeries()
 	if err != nil {
@@ -267,12 +276,12 @@ func GetSonarrSeriesDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg, err := config.Get()
-	if err != nil || cfg.SonarrURL == "" || cfg.SonarrAPIKey == "" {
+	if err != nil || cfg.SonarrURL == "" || config.SecretForUse(cfg.SonarrAPIKey) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Sonarr not configured"})
 		return
 	}
 
-	client := sonarrClient.NewClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+	client := sonarrClient.NewClient(cfg.SonarrURL, config.SecretForUse(cfg.SonarrAPIKey))
 
 	s, err := client.GetSeriesByID(id)
 	if err != nil {

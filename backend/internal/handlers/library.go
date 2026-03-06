@@ -62,7 +62,7 @@ func fetchAndCacheLibrary() (*LibraryResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := radarrClient.NewClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	client := radarrClient.NewClient(cfg.RadarrURL, config.SecretForUse(cfg.RadarrAPIKey))
 
 	movies, err := client.GetMovies()
 	if err != nil {

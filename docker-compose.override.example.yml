@@ -2,5 +2,28 @@ services:
   cineforge:
     volumes:
       - /path/to/your/media:/media:rw
+
+    ## GPU Hardware Acceleration
+    ## Uncomment ONE of the sections below to enable GPU-accelerated video
+    ## encoding during normalization. This offloads video transcode from the
+    ## CPU to the GPU, significantly reducing CPU load when files need
+    ## re-encoding (video_mode: reencode or copy-mode fallback).
+    ##
+    ## Note: Audio normalization (loudnorm filter + AAC encode) always runs
+    ## on the CPU. GPU acceleration only helps with the video stream.
+
+    # --- VAAPI (Intel/AMD GPU) ---
+    # Requires /dev/dri device access. Works with Intel iGPU and AMD GPUs.
     devices:
-      - /dev/dri:/dev/dri  # VAAPI hardware acceleration
+      - /dev/dri:/dev/dri
+
+    # --- NVENC (NVIDIA GPU) ---
+    # Requires nvidia-container-toolkit installed on the host.
+    # Uncomment the deploy section and comment out the devices section above.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu, video]
